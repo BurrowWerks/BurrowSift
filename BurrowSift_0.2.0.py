@@ -69,7 +69,7 @@ tokenizer: PreTrainedTokenizerBase = cast(
 
 def automatic_ollama_start() -> None:
     try:
-        response = requests.get("http://localhost:11434/api/tags", timeout=5)
+        response: requests.Response = requests.get(url="http://localhost:11434/api/tags", timeout=5)
         if response.status_code == 200:
             print("Ollama API is already running.")
             return
@@ -81,7 +81,7 @@ def automatic_ollama_start() -> None:
         ollama_env["OLLAMA_FLASH_ATTENTION"] = "1"
         ollama_env["OLLAMA_KV_CACHE_TYPE"] = "q8_0"
 
-        subprocess.Popen(["ollama", "serve"], env=ollama_env,)
+        subprocess.Popen(args=["ollama", "serve"], env=ollama_env,)
         
         for _ in range(10):  # Poll up to 10 times
             try:
@@ -258,14 +258,38 @@ def send_to_ollama_api(structured_dict: dict[str, Any], source_file_name: str, u
 
     structured_dict_json = json.dumps(structured_dict, indent=4)
 
-    prompt = (f"Summarise and categorise the supplied document {structured_dict_json} ""Return ONLY a new JSON object containing category, summary, subcategory and tags. "
-    "Do not reproduce the supplied metadata or document content. "
-    "Provide response in JSON format with the following keys: 'category': string, 'summary': string, 'subcategory': string, 'tags': list of strings. "
-    "The 'category' should be a single word from the approved categories, that best describes the main topic of the input text for filing purposes. "
-    "The 'summary' should be a concise summary of the input text, capturing the key points and main ideas. "
-    "The 'subcategory' should be string from the approved subcategory list. "
-    "The 'tags' should be a short meaningful list of strings."
-    "Ensure that the JSON response is well-structured and adheres to proper JSON formatting standards.")
+    prompt = f"""
+Analyze the supplied document and classify it for filing purposes.
+
+Document:
+{structured_dict_json}
+
+Return ONLY a single JSON object containing exactly these keys:
+'category', 'summary', 'subcategory', and 'tags'.
+
+Classification rules:
+- Classify the document according to its primary document type and intended purpose.
+- Do not classify it only by topics, skills, industries, products, or subjects mentioned inside the document.
+- Prefer the document's function over its subject matter.
+- A resume that mentions education, programming, or research is still an employment resume.
+- An invoice for computer equipment is still a finance invoice, not a technology document.
+- A programming textbook is education or reference material, not an employment document.
+- The category must be selected from the approved category values defined by the schema.
+- The subcategory must be selected from the approved subcategory values defined by the schema.
+- Do not invent new categories or subcategories.
+- If the document does not clearly fit an approved classification, use the approved fallback classification.
+
+Output requirements:
+- 'category': the approved top-level filing category.
+- 'subcategory': the approved filing subcategory that best matches the document's type and purpose.
+- 'summary': a concise factual summary of the document's main purpose and key information.
+- 'tags': a short list of meaningful topic labels that describe the document's content. Tags may describe subjects that are not part of the filing category.
+
+Do not reproduce the supplied metadata or full document content.
+Do not include explanations, commentary, markdown, or text outside the JSON object.
+Ensure the response conforms exactly to the supplied JSON schema.
+"""
+
 
     OLLAMA_MODEL = "gemma4-12b-256k-test"
     OLLAMA_NUM_CTX = 262144
@@ -345,8 +369,23 @@ def send_to_ollama_api(structured_dict: dict[str, Any], source_file_name: str, u
                         "Job Advertisements",
                         "Payroll"
                     ]
+                },
+                "summary": {
+                    "type": "string"
+                },
+                "tags": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
                 }
-            }
+            },
+            "required": [
+                "category",
+                "subcategory",
+                "summary",
+                "tags"
+            ]
         },
 
         {
@@ -364,8 +403,23 @@ def send_to_ollama_api(structured_dict: dict[str, Any], source_file_name: str, u
                        "Budgets",
                        "Investments"
                    ]
+               },
+               "summary": {
+                   "type": "string"
+               },
+               "tags": {
+                   "type": "array",
+                   "items": {
+                       "type": "string"
+                   }
                }
            }, 
+           "required": [
+               "category",
+               "subcategory",
+               "summary",
+               "tags"
+           ]
         },
 
         {
@@ -384,8 +438,23 @@ def send_to_ollama_api(structured_dict: dict[str, Any], source_file_name: str, u
                         "Contracts",
                         "Research"
                     ]
+                },
+                "summary": {
+                    "type": "string"
+                },
+                "tags": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
                 }
             },
+            "required": [
+                "category",
+                "subcategory",
+                "summary",
+                "tags"
+            ]
         },
 
         {
@@ -402,8 +471,23 @@ def send_to_ollama_api(structured_dict: dict[str, Any], source_file_name: str, u
                         "Security",
                         "AI"
                     ]
+                },
+                "summary": {
+                    "type": "string"
+                },
+                "tags": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
                 }
             },
+            "required": [
+                "category",
+                "subcategory",
+                "summary",
+                "tags"
+            ]
         },
 
         {
@@ -420,8 +504,23 @@ def send_to_ollama_api(structured_dict: dict[str, Any], source_file_name: str, u
                         "Research",
                         "Qualifications",
                     ]
+                },
+                "summary": {
+                    "type": "string"
+                },
+                "tags": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
                 }
             },
+            "required": [
+                "category",
+                "subcategory",
+                "summary",
+                "tags"
+            ]
         },
 
         {
@@ -437,8 +536,23 @@ def send_to_ollama_api(structured_dict: dict[str, Any], source_file_name: str, u
                         "Court Documents",
                         "Legal Reference"
                     ]
+                },
+                "summary": {
+                    "type": "string"
+                },
+                "tags": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
                 }
             },
+            "required": [
+                "category",
+                "subcategory",
+                "summary",
+                "tags"
+            ]
         },
 
         {
@@ -454,8 +568,23 @@ def send_to_ollama_api(structured_dict: dict[str, Any], source_file_name: str, u
                         "Applications",
                         "Correspondence"
                     ]
+                },
+                "summary": {
+                    "type": "string"
+                },
+                "tags": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
                 } 
             },
+            "required": [
+                "category",
+                "subcategory",
+                "summary",
+                "tags"
+            ]
         },
 
         {
@@ -471,8 +600,23 @@ def send_to_ollama_api(structured_dict: dict[str, Any], source_file_name: str, u
                         "Appointments",
                         "Insurance"
                     ]
+                },
+                "summary": {
+                    "type": "string"
+                },
+                "tags": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
                 }
             },
+            "required": [
+                "category",
+                "subcategory",
+                "summary",
+                "tags"
+            ]
         },
 
         {
@@ -488,8 +632,23 @@ def send_to_ollama_api(structured_dict: dict[str, Any], source_file_name: str, u
                         "Leasing",
                         "Ownership"
                     ]
+                },
+                "summary": {
+                    "type": "string"
+                },
+                "tags": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
                 }
             },
+            "required": [
+                "category",
+                "subcategory",
+                "summary",
+                "tags"
+            ]
         },
 
         {
@@ -503,8 +662,23 @@ def send_to_ollama_api(structured_dict: dict[str, Any], source_file_name: str, u
                         "Claims",
                         "Correspondence"
                     ]
+                },
+                "summary": {
+                    "type": "string"
+                },
+                "tags": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
                 }
             },
+            "required": [
+                "category",
+                "subcategory",
+                "summary",
+                "tags"
+            ]
         },
 
         {
@@ -529,8 +703,23 @@ def send_to_ollama_api(structured_dict: dict[str, Any], source_file_name: str, u
                         "Reviews & Criticism",
                         "Guides & Reference"
                     ]
+                },
+                "summary": {
+                    "type": "string"
+                },
+                "tags": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
                 }
-            },    
+            },
+            "required": [
+                "category",
+                "subcategory",
+                "summary",
+                "tags"
+            ]    
         },
 
         {
@@ -545,8 +734,23 @@ def send_to_ollama_api(structured_dict: dict[str, Any], source_file_name: str, u
                         "Records",
                         "Miscellaneous"
                     ]
+                },
+                "summary": {
+                    "type": "string"
+                },
+                "tags": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
                 }
             },
+            "required": [
+                "category",
+                "subcategory",
+                "summary",
+                "tags"
+            ]
         },
 
         {
@@ -562,8 +766,23 @@ def send_to_ollama_api(structured_dict: dict[str, Any], source_file_name: str, u
                         "Articles",
                         "Research"
                     ]
+                },
+                "summary": {
+                    "type": "string"
+                },
+                "tags": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
                 }
             },
+            "required": [
+                "category",
+                "subcategory",
+                "summary",
+                "tags"
+            ]
         },
 
         {
@@ -575,8 +794,23 @@ def send_to_ollama_api(structured_dict: dict[str, Any], source_file_name: str, u
                     "enum": [
                         "Uncategorized"
                     ]
+                },
+                "summary": {
+                    "type": "string"
+                },
+                "tags": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
                 }
-            }
+            },
+            "required": [
+                "category",
+                "subcategory",
+                "summary",
+                "tags"
+            ]
         }
     ]
 },

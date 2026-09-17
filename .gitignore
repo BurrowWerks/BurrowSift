@@ -1,7 +1,8 @@
 # Python cache
 
-__pycache__/
+**pycache**/
 *.py[cod]
+*$py.class
 
 # Virtual environments
 
@@ -19,6 +20,7 @@ env/
 
 .pytest_cache/
 .coverage
+.coverage.*
 htmlcov/
 
 # Type checking / linting
@@ -26,13 +28,37 @@ htmlcov/
 .mypy_cache/
 .ruff_cache/
 
-# Build files
+# Build / packaging
 
 build/
 dist/
 *.egg-info/
 
-# IDEs
+# Local databases
+
+*.db
+*.sqlite
+*.sqlite3
+
+# Generated BurrowSift output
+
+output/
+outputs/
+processed/
+temp/
+tmp/
+
+# Generated document data
+
+*.summary.txt
+*.metadata.json
+
+# Logs
+
+*.log
+logs/
+
+# IDEs / editors
 
 .vscode/
 .idea/
@@ -41,7 +67,11 @@ dist/
 
 .DS_Store
 Thumbs.db
+desktop.ini
 
-# Logs
+# Backup / temporary files
 
-*.log
+*.bak
+*.tmp
+*.swp
+*~

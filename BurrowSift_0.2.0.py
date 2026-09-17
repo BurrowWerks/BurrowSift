@@ -1,4 +1,4 @@
-from os import stat_result
+from os import mkdir, stat_result
 import sys
 from tkinter import filedialog
 import tkinter as tk
@@ -14,6 +14,8 @@ import requests
 from requests.exceptions import RequestException
 from uuid import uuid4
 import subprocess
+import shutil
+
 
 class InvalidFileTypeError(ValueError):
     statement = ("Invalid file type. Please select a document file of types PDF, DOCX, or TXT.")
@@ -32,6 +34,15 @@ class FileNotReadableError(PermissionError):
     def __init__(self):
             super().__init__(self.statement)
 
+class OriginalFileNotFoundError(FileNotFoundError):
+    statement = ("Original file not found in staged pair.")
+    def __init__(self):
+                super().__init__(self.statement)
+
+class JSONFileNotFoundError(FileNotFoundError):
+    statement = ("JSON file not found in staged pair.")
+    def __init__(self):
+                super().__init__(self.statement)
 
 class DirectoryNotWritableError(PermissionError):
     statement = ("The selected directory is not writable. Please select a different directory.")
@@ -59,6 +70,12 @@ class OllamaResponseDecodingError(OllamaResponseError):
 
 class OllamaResponseFormatError(OllamaResponseError):
     statement = ("Error occurred due to an unexpected format in the Ollama API response.")
+
+class StagedPairNotFoundError(KeyError):
+    statement = ("Staged pair could not be found for the provided document ID")
+
+    def __init__(self):
+            super().__init__(self.statement)
     
 tokenizer: PreTrainedTokenizerBase = cast(
     PreTrainedTokenizerBase,
@@ -119,7 +136,10 @@ def request_document() -> str:
         sys.exit("No file selected. Exiting the program.")
     
 def generate_unique_id() -> str:
-    return str(uuid4())
+    unique_id = str(uuid4())
+    return unique_id
+
+
 
 MAX_DOCUMENT_TOKENS = 180000
 
@@ -232,11 +252,13 @@ def write_content_to_json(structured_dict: dict[str, Any]) -> None:
     with open(file=output_path, mode='w', encoding='utf-8') as json_file:
         json.dump(obj=structured_dict, fp=json_file, indent=4)
 
-def create_ollama_output_path(source_file_name: str, unique_id: str,) -> str:
+def create_ollama_output_path(source_file_name: str, unique_id: str,)  -> tuple[Path, Path]:
     holding_dir: Path = Path(r"B:\Development\Projects\Learning\Python\BurrowSift\Holding")
     holding_dir.mkdir(parents=True, exist_ok=True)
     auto_file_name: Path = holding_dir / f"{source_file_name}__{unique_id}.json"
-    return str(auto_file_name)
+    path_tuple = (auto_file_name, holding_dir)
+    return path_tuple
+
 
 def turn_json_string_to_dict(json_string: str) -> dict[str, Any]:
     try:
@@ -875,20 +897,52 @@ def build_final_json_record(metadata: dict[str, Any], content: str, ollama_respo
     }
     return final_record
 
-def write_final_record_to_json(final_record: dict[str, Any], auto_file_name:str) -> None:
-    if not auto_file_name:
-        return  # User canceled the save dialog
+def write_final_record_to_json(final_record: dict[str, Any], auto_file_name: Path) -> Path:
     if not os.access(path=os.path.dirname(auto_file_name), mode=os.W_OK):
         raise DirectoryNotWritableError()   
 
     with open(file=auto_file_name, mode='w', encoding='utf-8') as json_file:
         json.dump(obj=final_record, fp=json_file, indent=4)
 
+    return auto_file_name
+
+def pair_identity(unique_id: str, moved_original_file: Path, ollama_output_path: Path) -> dict[str, tuple[Path, Path]]: 
+    staged_pair: tuple[Path, Path] = (moved_original_file, ollama_output_path)
+    id_staged_pair: dict[str, tuple[Path, Path]] = {unique_id: staged_pair}
+    return id_staged_pair
+
+def pair_contents_validation(unique_id:str ,id_staged_pair:dict[str,tuple[Path, Path]]) -> None:
+    if unique_id not in id_staged_pair:
+        raise StagedPairNotFoundError()
+    get_staged_pair = id_staged_pair[unique_id]
+    moved_original_file, ollama_output_path = get_staged_pair
+    if not moved_original_file.is_file():
+        raise OriginalFileNotFoundError()
+    if not ollama_output_path.is_file():
+        raise JSONFileNotFoundError()
+
+def routing_destination(auto_file_name: Path) -> tuple[str, str]:
+    with open(file=auto_file_name, mode='r', encoding='utf-8') as file:
+        content: dict[str, Any] = json.load(file)
+        sort_category: str = content["ollama_response"]["category"]
+        sort_subcategory: str = content["ollama_response"]["subcategory"]
+        sort_tuple: tuple[str, str] = (sort_category, sort_subcategory)
+        return sort_tuple
+
+def build_destination_path(sort_tuple: tuple[str, str]) -> Path:
+    sort_category, sort_subcategory = sort_tuple
+    burrowsift_sort_dir = Path(r"B:\Burrowsift\Sorted_files")/sort_category/sort_subcategory #Will need to let users create the initial parent directory upon setup so no hardcoding
+    burrowsift_sort_dir.mkdir(parents=True, exist_ok=True)
+    return burrowsift_sort_dir   
+
+def move_paired_files(unique_id: str, id_staged_pair: dict[str, tuple[Path, Path]], burrowsift_sort_dir: Path):
+#Todo: Move the file pair together
+
+
+
 def error_helper(error: Exception) -> None:
     print(f"Error: {error}")
     
-
-
 def main() -> None:
     while True:
         try:
@@ -939,11 +993,13 @@ def main() -> None:
         final_record: dict[str, Any] = build_final_json_record(metadata, content, ollama_response, unique_id, source_file_name, processing_stats)
         while True:
             try:
-                auto_named_file: str = create_ollama_output_path(source_file_name, unique_id)
-                write_final_record_to_json(final_record, auto_file_name=auto_named_file)
+                auto_named_file,  holding_dir, = create_ollama_output_path(source_file_name, unique_id)
+                
+                ollama_output_holding_path: Path = write_final_record_to_json(final_record, auto_file_name=auto_named_file)
             except (DirectoryNotWritableError) as error:
                 error_helper(error)
                 continue
+            moved_original_file: Path = Path(shutil.move(file_path, dst=holding_dir))
             print(f"Metadata: {metadata}")
             print(f"Content preview: {content[:100] if content else 'No content'}")
             break

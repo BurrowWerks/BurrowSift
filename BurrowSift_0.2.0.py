@@ -1,4 +1,4 @@
-from os import mkdir, stat_result
+from os import stat_result
 import sys
 from tkinter import filedialog
 import tkinter as tk
@@ -76,7 +76,26 @@ class StagedPairNotFoundError(KeyError):
 
     def __init__(self):
             super().__init__(self.statement)
+
+class OriginalFileSortError(Exception):
+    statement = ("Original file could not be moved to the sorting destination.")
+
+    def __init__(self):
+            super().__init__(self.statement)
+
+class JSONFileSortError(Exception):
+    statement = ("JSON file could not be moved to the sorting destination.")
     
+    def __init__(self):
+            super().__init__(self.statement)
+
+class FileSortRollbackError(Exception):
+    statement = ("JSON file could not be moved to the sorting destination and the original file rollback failed.")
+
+    def __init__(self):
+            super().__init__(self.statement)
+
+
 tokenizer: PreTrainedTokenizerBase = cast(
     PreTrainedTokenizerBase,
     AutoTokenizer.from_pretrained(# pyright: ignore[reportUnknownMemberType]
@@ -935,10 +954,36 @@ def build_destination_path(sort_tuple: tuple[str, str]) -> Path:
     burrowsift_sort_dir.mkdir(parents=True, exist_ok=True)
     return burrowsift_sort_dir   
 
-def move_paired_files(unique_id: str, id_staged_pair: dict[str, tuple[Path, Path]], burrowsift_sort_dir: Path):
-#Todo: Move the file pair together
-
-
+def move_paired_files(unique_id: str, id_staged_pair: dict[str, tuple[Path, Path]], burrowsift_sort_dir: Path) -> tuple[Path, Path]:
+    moved_original_file, ollama_output_path = id_staged_pair[unique_id]
+    try:
+        sorted_original_file_path = Path(shutil.move(src=moved_original_file, dst=burrowsift_sort_dir))
+    except (OSError, shutil.Error) as error:
+        raise OriginalFileSortError() from error
+    if not sorted_original_file_path.is_file():
+        raise OriginalFileSortError()
+    try:
+        sorted_ollama_file_path = Path(shutil.move(src=ollama_output_path, dst=burrowsift_sort_dir))
+    except (OSError, shutil.Error) as error:
+        try:
+            move_back_original_file = Path(shutil.move(src=sorted_original_file_path, dst=moved_original_file))
+        except (OSError, shutil.Error) as rollback_error:
+            raise FileSortRollbackError() from rollback_error
+        if not move_back_original_file.is_file():
+            raise FileSortRollbackError()
+        raise JSONFileSortError() from error
+    if not sorted_ollama_file_path.is_file():
+        try:
+            move_back_original_file = Path(shutil.move(src=sorted_original_file_path, dst=moved_original_file))
+        except (OSError, shutil.Error) as rollback_error:
+            raise FileSortRollbackError() from rollback_error
+        if not move_back_original_file.is_file():
+            raise FileSortRollbackError()
+        raise JSONFileSortError()
+    return sorted_original_file_path, sorted_ollama_file_path
+    
+    
+    
 
 def error_helper(error: Exception) -> None:
     print(f"Error: {error}")
@@ -999,7 +1044,29 @@ def main() -> None:
             except (DirectoryNotWritableError) as error:
                 error_helper(error)
                 continue
-            moved_original_file: Path = Path(shutil.move(file_path, dst=holding_dir))
+            try:
+                moved_original_file: Path = Path(shutil.move(src=file_path, dst=holding_dir))
+            except (OSError, shutil.Error) as error:
+                error_helper(error)
+                break
+            try:    
+                id_staged_pair: dict[str, tuple[Path, Path]] = pair_identity(unique_id, moved_original_file, ollama_output_path=ollama_output_holding_path)
+                pair_contents_validation(unique_id, id_staged_pair)
+            except (StagedPairNotFoundError, OriginalFileNotFoundError, JSONFileNotFoundError) as error:
+                error_helper(error)
+                break
+            try:
+                sort_tuple: tuple[str, str] = routing_destination(auto_file_name=ollama_output_holding_path)
+                built_path: Path = build_destination_path(sort_tuple)
+            except (OSError, json.JSONDecodeError, KeyError) as error:
+                error_helper(error)
+                break
+            try:
+                sorted_original_file_path, sorted_ollama_file_path = move_paired_files(unique_id, id_staged_pair, burrowsift_sort_dir=built_path)
+            except (OriginalFileSortError, JSONFileSortError, FileSortRollbackError) as error:
+                error_helper(error)
+                break
+            
             print(f"Metadata: {metadata}")
             print(f"Content preview: {content[:100] if content else 'No content'}")
             break

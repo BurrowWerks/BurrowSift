@@ -15,33 +15,35 @@ from requests.exceptions import RequestException
 from uuid import uuid4
 import subprocess
 import shutil
+import sqlite3
+from datetime import datetime
 
 
 class InvalidFileTypeError(ValueError):
-    statement = ("Invalid file type. Please select a document file of types PDF, DOCX, or TXT.")
-    def __init__(self):
+    statement: str = ("Invalid file type. Please select a document file of types PDF, DOCX, or TXT.")
+    def __init__(self) -> None:
             super().__init__(self.statement)
 class DocumentTooLargeError(ValueError):
-    statement = ("The document exceeds the maximum supported token limit. Please select a smaller document.")
-    def __init__(self):
+    statement: str = ("The document exceeds the maximum supported token limit. Please select a smaller document.")
+    def __init__(self) -> None:
             super().__init__(self.statement)
 class InvalidFileError(FileNotFoundError):
-    statement = ("The selected file is not valid. Please select a document file of types PDF, DOCX, or TXT.")
+    statement: str = ("The selected file is not valid. Please select a document file of types PDF, DOCX, or TXT.")
     def __init__(self):
             super().__init__(self.statement)
 class FileNotReadableError(PermissionError):
-    statement = ("The selected file is not readable. Please select a different file.")
-    def __init__(self):
+    statement: str = ("The selected file is not readable. Please select a different file.")
+    def __init__(self) -> None:
             super().__init__(self.statement)
 
 class OriginalFileNotFoundError(FileNotFoundError):
-    statement = ("Original file not found in staged pair.")
-    def __init__(self):
+    statement: str = ("Original file not found in staged pair.")
+    def __init__(self) -> None:
                 super().__init__(self.statement)
 
 class JSONFileNotFoundError(FileNotFoundError):
-    statement = ("JSON file not found in staged pair.")
-    def __init__(self):
+    statement: str = ("JSON file not found in staged pair.")
+    def __init__(self) -> None:
                 super().__init__(self.statement)
 
 class DirectoryNotWritableError(PermissionError):
@@ -50,41 +52,41 @@ class DirectoryNotWritableError(PermissionError):
             super().__init__(self.statement)
 
 class DirectoryNotReadableError(PermissionError):
-    statement = ("The selected directory is not readable. Please select a different directory.")
-    def __init__(self):
+    statement: str = ("The selected directory is not readable. Please select a different directory.")
+    def __init__(self) -> None:
             super().__init__(self.statement)
 
 class OllamaAPIError(RequestException):
-    statement = ("Error occurred while communicating with the Ollama API.")
-    def __init__(self):
+    statement: str = ("Error occurred while communicating with the Ollama API.")
+    def __init__(self) -> None:
             super().__init__(self.statement)
 
 class OllamaResponseError(ValueError):
-    statement = ("Error occurred while processing the Ollama API response.")
+    statement: str = ("Error occurred while processing the Ollama API response.")
     
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__(self.statement)
 
 class OllamaResponseDecodingError(OllamaResponseError):
-    statement = ("Error occurred while decoding the Ollama API response.")
+    statement: str = ("Error occurred while decoding the Ollama API response.")
 
 class OllamaResponseFormatError(OllamaResponseError):
-    statement = ("Error occurred due to an unexpected format in the Ollama API response.")
+    statement: str = ("Error occurred due to an unexpected format in the Ollama API response.")
 
 class StagedPairNotFoundError(KeyError):
-    statement = ("Staged pair could not be found for the provided document ID")
+    statement: str = ("Staged pair could not be found for the provided document ID")
 
-    def __init__(self):
+    def __init__(self) -> None:
             super().__init__(self.statement)
 
 class OriginalFileSortError(Exception):
-    statement = ("Original file could not be moved to the sorting destination.")
+    statement: str = ("Original file could not be moved to the sorting destination.")
 
-    def __init__(self):
+    def __init__(self) -> None:
             super().__init__(self.statement)
 
 class JSONFileSortError(Exception):
-    statement = ("JSON file could not be moved to the sorting destination.")
+    statement: str = ("JSON file could not be moved to the sorting destination.")
     
     def __init__(self):
             super().__init__(self.statement)
@@ -94,6 +96,27 @@ class FileSortRollbackError(Exception):
 
     def __init__(self):
             super().__init__(self.statement)
+
+class DatabaseCreationError(Exception): # Name needs changing later as this is poth creation not db creation
+    statement: str = ("database creation failed")
+
+    def __init__(self): 
+        super().__init__(self.statement)
+class DatabaseConnectionError(Exception): 
+    statement: str = ("connection to database failed")
+
+    def __init__(self):
+            super().__init__(self.statement)
+class DatabaseTableCreationError(Exception):
+    statement: str = ("database table could not be created or retrieved.")
+
+    def __init__(self):
+            super().__init__(self.statement)
+class DatabaseInsertionError(Exception):
+    statement: str = ("Dictionary failed to pass into database")
+    
+    def __init__(self):
+        super().__init__(self.statement)
 
 
 tokenizer: PreTrainedTokenizerBase = cast(
@@ -134,6 +157,45 @@ def automatic_ollama_start() -> None:
     except Exception as e:
         raise OllamaAPIError() from e
 
+def create_or_open_database() -> Path:
+    try:
+        data_base_dir: Path= Path(r"B:\BurrowSift\Database")
+        data_base_dir.mkdir(parents=True, exist_ok=True)
+        data_base_path: Path = data_base_dir/"burrowsift.db"
+    except (OSError) as e:
+        raise DatabaseCreationError() from e
+    return data_base_path
+
+def connect_sqlite(data_base_path: Path) -> sqlite3.Connection:
+    try:
+        db_connect: sqlite3.Connection = sqlite3.connect(data_base_path)
+    except (sqlite3.Error) as e:
+        raise DatabaseConnectionError() from e
+    return db_connect
+
+def create_db_table(db_connect:sqlite3.Connection) -> None:
+    try:
+        cursor = db_connect.cursor()
+        schema_query = """
+            CREATE TABLE IF NOT EXISTS documents(
+            document_identifier TEXT PRIMARY KEY,
+            source_file_name TEXT NOT NULL,
+            original_file_path TEXT NOT NULL,
+            current_file_path TEXT NOT NULL,
+            json_file_path TEXT NOT NULL,
+            file_type TEXT NOT NULL,
+            file_size INTEGER NOT NULL,
+            category TEXT NOT NULL,
+            subcategory TEXT NOT NULL,
+            summary_text TEXT NOT NULL,
+            processed_at TEXT NOT NULL)
+            """
+        cursor.execute(schema_query)
+        db_connect.commit()
+    except (sqlite3.Error) as e:
+        raise DatabaseTableCreationError() from e
+
+        
 
 def request_document() -> str:
     root = tk.Tk()
@@ -336,11 +398,11 @@ Ensure the response conforms exactly to the supplied JSON schema.
     OLLAMA_NUM_CTX = 262144
     MAX_OLLAMA_PROMPT_TOKENS = 220000
 
-    tokens_prompt: int = gemma_token_count(prompt)
+    tokens_prompt: int = gemma_token_count(text=prompt)
     if tokens_prompt > MAX_OLLAMA_PROMPT_TOKENS:
         raise DocumentTooLargeError()
 
-    payload_category_summary = {
+    payload_category_summary: dict[str, str | dict[str, str | dict[str, dict[str, str | list[str]] | dict[str, str] | dict[str, str | dict[str, str]]] | list[str] | bool | list[dict[str, dict[str, dict[str, str] | dict[str, list[str]] | dict[str, str | dict[str, str]]] | list[str]]]] | bool | dict[str, int]] = {
     "model": OLLAMA_MODEL,
     "prompt": prompt,
     "format": {
@@ -902,7 +964,7 @@ def ollama_response_validation(response_dict: dict[str, Any]) -> None:
             raise OllamaResponseFormatError()
 
 def build_processing_stats(character_count:int, word_count:int, tokenizer_token_count:int, prompt_tokens:int, completion_tokens:int, tokens_prompt: int) -> dict[str, int]:
-    processing_stats: dict[str, int] ={"character_count": character_count, "word_count": word_count, "tokenizer_token_count": tokenizer_token_count, "tokens_prompt": tokens_prompt, "prompt_eval_count": prompt_tokens, "eval_count": completion_tokens}
+    processing_stats: dict[str, int] = {"character_count": character_count, "word_count": word_count, "tokenizer_token_count": tokenizer_token_count, "tokens_prompt": tokens_prompt, "prompt_eval_count": prompt_tokens, "eval_count": completion_tokens}
     return processing_stats
 
 def build_final_json_record(metadata: dict[str, Any], content: str, ollama_response: dict[str, Any], unique_id: str, source_file_name: str, processing_stats:dict[str, int]) -> dict[str, Any]:
@@ -911,13 +973,12 @@ def build_final_json_record(metadata: dict[str, Any], content: str, ollama_respo
         "document_identifier": unique_id,
         "processing_stats": processing_stats,
         "source_file_name": source_file_name,
-        "ollama_response": ollama_response,
-        
+        "ollama_response": ollama_response,   
     }
     return final_record
 
 def write_final_record_to_json(final_record: dict[str, Any], auto_file_name: Path) -> Path:
-    if not os.access(path=os.path.dirname(auto_file_name), mode=os.W_OK):
+    if not os.access(path=os.path.dirname(p=auto_file_name), mode=os.W_OK):
         raise DirectoryNotWritableError()   
 
     with open(file=auto_file_name, mode='w', encoding='utf-8') as json_file:
@@ -933,7 +994,7 @@ def pair_identity(unique_id: str, moved_original_file: Path, ollama_output_path:
 def pair_contents_validation(unique_id:str ,id_staged_pair:dict[str,tuple[Path, Path]]) -> None:
     if unique_id not in id_staged_pair:
         raise StagedPairNotFoundError()
-    get_staged_pair = id_staged_pair[unique_id]
+    get_staged_pair: tuple[Path, Path] = id_staged_pair[unique_id]
     moved_original_file, ollama_output_path = get_staged_pair
     if not moved_original_file.is_file():
         raise OriginalFileNotFoundError()
@@ -982,8 +1043,39 @@ def move_paired_files(unique_id: str, id_staged_pair: dict[str, tuple[Path, Path
         raise JSONFileSortError()
     return sorted_original_file_path, sorted_ollama_file_path
     
-    
-    
+def add_to_final_record(final_record: dict[str, Any], sorted_original_file_path, sorted_ollama_file_path):
+    final_record["current_file_path"] = str(sorted_original_file_path)
+    final_record["json_file_path"] = str(sorted_ollama_file_path)
+    return final_record
+
+def extract_finalrecord_values_for_sqlite(final_record: dict[str, Any])-> dict[str, Any]:
+    local_time = datetime.now().astimezone().isoformat()
+    sql_dict = {"document_identifier": final_record["document_identifier"],
+        "source_file_name": final_record["metadata"]["file_name"],
+        "original_file_path": final_record["metadata"]["absolute_path"],
+        "current_file_path": final_record["current_file_path"],
+        "json_file_path": final_record["json_file_path"],
+        "file_type": final_record["metadata"]["file_type"],
+        "file_size": final_record["metadata"]["file_size"],
+        "category": final_record["ollama_response"]["category"],
+        "subcategory": final_record["ollama_response"]["subcategory"],
+        "summary_text": final_record["ollama_response"]["summary"],
+        "processed_at": local_time
+        }
+    return sql_dict
+
+def insert_dict_into_sql(sql_dict: dict[str, Any], db_connect: sqlite3.Connection)-> None:
+    try:    
+        cursor = db_connect.cursor()
+        columns = ", ".join(sql_dict.keys())
+        placeholders = ", ".join([f":{key}" for key in sql_dict.keys()])
+        query = f"INSERT INTO documents ({columns}) VALUES ({placeholders})"
+        cursor.execute(query, sql_dict)
+        db_connect.commit()
+    except (sqlite3.Error) as error:
+        db_connect.rollback()
+        raise DatabaseInsertionError() from error
+
 
 def error_helper(error: Exception) -> None:
     print(f"Error: {error}")
@@ -995,6 +1087,21 @@ def main() -> None:
         except (OllamaAPIError) as error:
             error_helper(error)
             continue  
+        try:
+            db_path: Path = create_or_open_database()
+        except (DatabaseCreationError) as error:
+            error_helper(error)
+            break
+        try:
+            db_connection: sqlite3.Connection = connect_sqlite(data_base_path=db_path)
+        except (DatabaseConnectionError) as error:
+            error_helper(error)
+            break
+        try:
+            create_db_table(db_connect=db_connection)
+        except (DatabaseTableCreationError) as error:
+            error_helper(error)
+            break
         try:
             file_path: str = request_document()
         except (InvalidFileError, InvalidFileTypeError) as error:
@@ -1066,7 +1173,14 @@ def main() -> None:
             except (OriginalFileSortError, JSONFileSortError, FileSortRollbackError) as error:
                 error_helper(error)
                 break
-            
+            try:
+                final_record_sql = add_to_final_record(final_record, sorted_original_file_path, sorted_ollama_file_path)
+                extract_record = extract_finalrecord_values_for_sqlite(final_record_sql)
+                insert_dict = insert_dict_into_sql(extract_record, db_connection)
+            except (DatabaseInsertionError) as error:
+                error_helper(error)
+            break
+
             print(f"Metadata: {metadata}")
             print(f"Content preview: {content[:100] if content else 'No content'}")
             break

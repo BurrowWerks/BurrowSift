@@ -17,6 +17,7 @@ import subprocess
 import shutil
 import sqlite3
 from datetime import datetime
+import duckdb
 
 
 class InvalidFileTypeError(ValueError):
@@ -118,6 +119,24 @@ class DatabaseInsertionError(Exception):
     def __init__(self):
         super().__init__(self.statement)
 
+class DuckDBDatabaseConnectionError(Exception): 
+    statement: str = ("connection to database failed")
+
+    def __init__(self):
+            super().__init__(self.statement)
+
+class DatabaseTableAlterError(Exception):
+    statement: str = ("database table could not be Altered.")
+
+    def __init__(self):
+            super().__init__(self.statement)
+
+class NoUUIDMatch(Exception):
+    statement: str = ("No UUID match was found in database.")
+
+    def __init__(self):
+            super().__init__(self.statement)
+          
 
 tokenizer: PreTrainedTokenizerBase = cast(
     PreTrainedTokenizerBase,
@@ -195,7 +214,96 @@ def create_db_table(db_connect:sqlite3.Connection) -> None:
     except (sqlite3.Error) as e:
         raise DatabaseTableCreationError() from e
 
-        
+def alter_update_sqlite_table(db_connect: sqlite3.Connection)-> None:
+    try:
+        new_columns ={
+            "model_name_version": "TEXT",
+            "processing_duration": "REAL",
+            "inference_duration_seconds": "REAL",
+            "success_failure_status": "TEXT",
+            "retry_count": "INTEGER",
+            "chunk_count": "INTEGER",
+            "processing_location": "TEXT",
+            "character_count": "INTEGER", 
+            "word_count": "INTEGER",
+            "tokenizer_token_count": "INTEGER",
+            "tokens_prompt": "INTEGER",
+            "prompt_eval_count": "INTEGER",
+            "eval_count": "INTEGER",
+            "total_ollama_api_processing_duration": "REAL",
+            "prompt_eval_duration": "INTEGER",
+            "prompt_eval_duration_seconds": "REAL",
+            "max_ai_config_context_window_tokens": "INTEGER",
+            "max_burrowsift_processing_tokens_ceiling": "INTEGER",
+
+
+        }
+        table = "documents"
+        cursor = db_connect.cursor()
+        cursor.execute("SELECT * FROM pragma_table_info(?)",(table,))
+        columns = cursor.fetchall()
+        column_names = [column[1] for column in columns]
+
+
+        for name, value in new_columns.items():
+            if name not in column_names:
+                schema_query = f"""ALTER TABLE documents ADD COLUMN {name} {value};"""
+                cursor.execute(schema_query)
+        db_connect.commit()
+           
+    except (sqlite3.Error) as e:
+        db_connect.rollback()
+        raise DatabaseTableAlterError() from e
+
+
+def create_or_open_duckdb_path()-> Path:
+    try:
+        duckdb_dirs: Path = Path(r"B:\BurrowSift\Database")
+        duckdb_dirs.mkdir(parents=True, exist_ok=True)
+        duckdb_path: Path = duckdb_dirs/"burrowsift.analytics.duckdb"
+    except (OSError) as e:
+        raise DatabaseCreationError() from e
+    return duckdb_path
+
+def connect_to_duckdb(duckdb_path: Path)-> duckdb.DuckDBPyConnection:
+    try:
+        duckdb_connect = duckdb.connect(str(duckdb_path))
+    except (duckdb.Error) as e:
+        raise DuckDBDatabaseConnectionError() from e
+    return duckdb_connect
+
+def create_duckdb_table(duckdb_connect) -> None:
+    try:
+        cursor = duckdb_connect.cursor()
+        schema_query = """
+        CREATE TABLE IF NOT EXISTS document_analytics (
+        document_identifier VARCHAR PRIMARY KEY,
+        file_type VARCHAR,
+        file_size BIGINT,
+        category VARCHAR,
+        subcategory VARCHAR,
+        processed_at TIMESTAMPTZ,
+        model_name_version VARCHAR,
+        processing_duration DOUBLE,
+        inference_duration_seconds DOUBLE,
+        character_count BIGINT,
+        word_count BIGINT,
+        tokenizer_token_count BIGINT,
+        tokens_prompt BIGINT,
+        prompt_eval_count BIGINT,
+        eval_count BIGINT,
+        total_ollama_api_processing_duration DOUBLE,
+        prompt_eval_duration BIGINT,
+        prompt_eval_duration_seconds DOUBLE,
+        max_ai_config_context_window_tokens BIGINT,
+        max_burrowsift_processing_tokens_ceiling BIGINT);
+        """
+        cursor.execute(schema_query)
+        duckdb_connect.commit()
+    except (duckdb.Error) as e:
+        raise DatabaseTableCreationError() from e
+
+
 
 def request_document() -> str:
     root = tk.Tk()
@@ -220,7 +328,9 @@ def generate_unique_id() -> str:
     unique_id = str(uuid4())
     return unique_id
 
-
+def start_processing_time():
+    processing_time_start = time.perf_counter()
+    return processing_time_start
 
 MAX_DOCUMENT_TOKENS = 180000
 
@@ -356,7 +466,7 @@ def write_ollama_response_to_json(temp_file: str, response_dict: dict[str, Any])
         json.dump(obj=response_dict, fp=json_file, indent=4)
 
 
-def send_to_ollama_api(structured_dict: dict[str, Any], source_file_name: str, unique_id: str,) -> tuple[dict[str, Any], int, int, int]:
+def send_to_ollama_api(structured_dict: dict[str, Any], source_file_name: str, unique_id: str,) -> tuple[dict[str, Any], int, int, int, int, float, int, float, str, int, int]:
     url = "http://localhost:11434/api/generate"
 
     structured_dict_json = json.dumps(structured_dict, indent=4)
@@ -394,16 +504,16 @@ Ensure the response conforms exactly to the supplied JSON schema.
 """
 
 
-    OLLAMA_MODEL = "gemma4-12b-256k-test"
-    OLLAMA_NUM_CTX = 262144
-    MAX_OLLAMA_PROMPT_TOKENS = 220000
+    ai_model = "gemma4-12b-256k-test"
+    model_num_ctx = 262144
+    max_prompt_tokens = 220000
 
     tokens_prompt: int = gemma_token_count(text=prompt)
-    if tokens_prompt > MAX_OLLAMA_PROMPT_TOKENS:
+    if tokens_prompt > max_prompt_tokens:
         raise DocumentTooLargeError()
 
     payload_category_summary: dict[str, str | dict[str, str | dict[str, dict[str, str | list[str]] | dict[str, str] | dict[str, str | dict[str, str]]] | list[str] | bool | list[dict[str, dict[str, dict[str, str] | dict[str, list[str]] | dict[str, str | dict[str, str]]] | list[str]]]] | bool | dict[str, int]] = {
-    "model": OLLAMA_MODEL,
+    "model": ai_model,
     "prompt": prompt,
     "format": {
     "type": "object",
@@ -920,7 +1030,7 @@ Ensure the response conforms exactly to the supplied JSON schema.
     "stream": False,
     "think": False,
     "options": {
-        "num_ctx": OLLAMA_NUM_CTX,
+        "num_ctx": model_num_ctx,
         },
     }
 
@@ -934,6 +1044,11 @@ Ensure the response conforms exactly to the supplied JSON schema.
 
         prompt_tokens: int = ollama_response_json.get("prompt_eval_count", 0)
         completion_tokens: int = ollama_response_json.get("eval_count", 0)
+        inference_duration: int = ollama_response_json.get("eval_duration", 0)
+        inference_duration_seconds: float = inference_duration / 1000000000
+        prompt_eval_duration: int = ollama_response_json.get("prompt_eval_duration", 0)
+        prompt_eval_duration_seconds: float = prompt_eval_duration / 1000000000
+
 
         json_string: str = ollama_response_json["response"]
 
@@ -948,7 +1063,7 @@ Ensure the response conforms exactly to the supplied JSON schema.
         print(f"Tokenizercount: {tokens_prompt}")
         print(f"Prompt tokens used: {prompt_tokens}")
         print(f"Completion tokens used: {completion_tokens}")
-        return response_data, prompt_tokens, completion_tokens, tokens_prompt
+        return response_data, prompt_tokens, completion_tokens, tokens_prompt, inference_duration, inference_duration_seconds, prompt_eval_duration, prompt_eval_duration_seconds, ai_model, model_num_ctx, max_prompt_tokens,
     else:
         raise OllamaAPIError()
 
@@ -963,11 +1078,11 @@ def ollama_response_validation(response_dict: dict[str, Any]) -> None:
         if not isinstance(tags, str):
             raise OllamaResponseFormatError()
 
-def build_processing_stats(character_count:int, word_count:int, tokenizer_token_count:int, prompt_tokens:int, completion_tokens:int, tokens_prompt: int) -> dict[str, int]:
-    processing_stats: dict[str, int] = {"character_count": character_count, "word_count": word_count, "tokenizer_token_count": tokenizer_token_count, "tokens_prompt": tokens_prompt, "prompt_eval_count": prompt_tokens, "eval_count": completion_tokens}
+def build_processing_stats(character_count:int, word_count:int, tokenizer_token_count:int, prompt_tokens:int, completion_tokens:int, tokens_prompt: int, inference_duration: int, inference_duration_seconds: float, prompt_eval_duration: int, prompt_eval_duration_seconds: float) -> dict[str, int|float]:
+    processing_stats: dict[str, int|float] = {"character_count": character_count, "word_count": word_count, "tokenizer_token_count": tokenizer_token_count, "tokens_prompt": tokens_prompt, "prompt_eval_count": prompt_tokens, "eval_count": completion_tokens, "inference_duration": inference_duration, "inference_duration_seconds": inference_duration_seconds, "prompt_eval_duration": prompt_eval_duration, "prompt_eval_duration_seconds": prompt_eval_duration_seconds}
     return processing_stats
 
-def build_final_json_record(metadata: dict[str, Any], content: str, ollama_response: dict[str, Any], unique_id: str, source_file_name: str, processing_stats:dict[str, int]) -> dict[str, Any]:
+def build_final_json_record(metadata: dict[str, Any], content: str, ollama_response: dict[str, Any], unique_id: str, source_file_name: str, processing_stats:dict[str, int| float]) -> dict[str, Any]:
     final_record: dict[str, Any] = {
         "metadata": metadata,
         "document_identifier": unique_id,
@@ -1042,10 +1157,23 @@ def move_paired_files(unique_id: str, id_staged_pair: dict[str, tuple[Path, Path
             raise FileSortRollbackError()
         raise JSONFileSortError()
     return sorted_original_file_path, sorted_ollama_file_path
+
+def end_processing_time():
+    processing_time_end = time.perf_counter()
+    return processing_time_end
+
+def calc_total_processing_time(procesing_time_start, processing_time_end):
+    processing_duration = processing_time_end - procesing_time_start
+    return processing_duration
     
-def add_to_final_record(final_record: dict[str, Any], sorted_original_file_path, sorted_ollama_file_path):
+def add_to_final_record(final_record: dict[str, Any], sorted_original_file_path, sorted_ollama_file_path, total_ollama_processing_duration, total_doc_processing_duration, ai_model, model_num_ctx, max_prompt_tokens):
     final_record["current_file_path"] = str(sorted_original_file_path)
     final_record["json_file_path"] = str(sorted_ollama_file_path)
+    final_record["total_ollama_processing_duration"] = total_ollama_processing_duration
+    final_record["total_doc_processing_duration"] = total_doc_processing_duration
+    final_record["ai_model"] = ai_model
+    final_record["model_max_tokens"] = model_num_ctx
+    final_record["max_processing_tokens"] = max_prompt_tokens
     return final_record
 
 def extract_finalrecord_values_for_sqlite(final_record: dict[str, Any])-> dict[str, Any]:
@@ -1060,7 +1188,21 @@ def extract_finalrecord_values_for_sqlite(final_record: dict[str, Any])-> dict[s
         "category": final_record["ollama_response"]["category"],
         "subcategory": final_record["ollama_response"]["subcategory"],
         "summary_text": final_record["ollama_response"]["summary"],
-        "processed_at": local_time
+        "processed_at": local_time,
+        "processing_duration": final_record["total_doc_processing_duration"],
+        "total_ollama_api_processing_duration": final_record["total_ollama_processing_duration"],
+        "inference_duration_seconds": final_record["processing_stats"]["inference_duration_seconds"],
+        "prompt_eval_duration": final_record["processing_stats"]["prompt_eval_duration"],
+        "prompt_eval_duration_seconds": final_record["processing_stats"]["prompt_eval_duration_seconds"],
+        "model_name_version": final_record["ai_model"],
+        "max_ai_config_context_window_tokens": final_record["model_max_tokens"],
+        "max_burrowsift_processing_tokens_ceiling": final_record["max_processing_tokens"],
+        "word_count": final_record["processing_stats"]["word_count"],
+        "character_count": final_record["processing_stats"]["character_count"],
+        "tokenizer_token_count": final_record["processing_stats"]["tokenizer_token_count"],
+        "tokens_prompt": final_record["processing_stats"]["tokens_prompt"],
+        "prompt_eval_count": final_record["processing_stats"]["prompt_eval_count"],
+        "eval_count": final_record["processing_stats"]["eval_count"],
         }
     return sql_dict
 
@@ -1075,6 +1217,42 @@ def insert_dict_into_sql(sql_dict: dict[str, Any], db_connect: sqlite3.Connectio
     except (sqlite3.Error) as error:
         db_connect.rollback()
         raise DatabaseInsertionError() from error
+
+def retrieve_doc_analytics_from_sqlite(unique_id, db_connect):
+    cursor = db_connect.cursor()
+
+    query = """SELECT
+    "document_identifier",
+    "file_type",
+    "file_size",
+    "category",
+    "subcategory",
+    "processed_at",
+    "model_name_version",
+    "processing_duration",
+    "inference_duration_seconds",
+    "character_count",
+    "word_count",
+    "tokenizer_token_count",
+    "tokens_prompt",
+    "prompt_eval_count",
+    "eval_count",
+    "total_ollama_api_processing_duration",
+    "prompt_eval_duration",
+    "prompt_eval_duration_seconds",
+    "max_ai_config_context_window_tokens",
+    "max_burrowsift_processing_tokens_ceiling"
+    from documents
+    WHERE "document_identifier" = ?
+    """
+    cursor.execute(query, (unique_id,))
+    row = cursor.fetchone()
+    if row is None:
+        raise NoUUIDMatch()
+    column_names = [description[0] for description in cursor.description]
+    analytics_dict = dict(zip(column_names, row))
+    return analytics_dict
+
 
 
 def error_helper(error: Exception) -> None:
@@ -1103,7 +1281,28 @@ def main() -> None:
             error_helper(error)
             break
         try:
+            alter_update_sqlite_table(db_connection)
+        except (DatabaseTableAlterError) as error:
+            error_helper(error)
+            break
+        try:
+            duckdb_path = create_or_open_duckdb_path()
+        except (DatabaseCreationError) as error:
+            error_helper(error)
+            break
+        try:
+            duckdb_connection = connect_to_duckdb(duckdb_path)
+        except (DuckDBDatabaseConnectionError) as error:
+            error_helper(error)
+            break
+        try:
+            create_duckdb_table(duckdb_connection)
+        except (DatabaseTableCreationError) as error:
+            error_helper(error)
+            break
+        try:
             file_path: str = request_document()
+            start_time = start_processing_time()
         except (InvalidFileError, InvalidFileTypeError) as error:
             error_helper(error)
             continue  # Prompt the user to select a file again
@@ -1125,19 +1324,26 @@ def main() -> None:
         unique_id: str = generate_unique_id()
         while True:
             try:
-                ollama_response, prompt_tokens, completion_tokens, tokens_prompt = send_to_ollama_api(
+                ollama_api_response_time_start = time.perf_counter()
+                ollama_response, prompt_tokens, completion_tokens, tokens_prompt, inference_duration, inference_duration_seconds, prompt_eval_duration, prompt_eval_duration_seconds, ai_model, model_num_ctx, max_prompt_tokens = send_to_ollama_api(
                     structured_dict=structured_content,
                     source_file_name=source_file_name,
                     unique_id=unique_id,
                 )
-                processing_stats: dict[str, int] = build_processing_stats(
+                processing_stats: dict[str, Any] = build_processing_stats(
                             character_count,
                             word_count,
                             tokenizer_token_count,
                             prompt_tokens,
                             completion_tokens,
                             tokens_prompt,
+                            inference_duration,
+                            inference_duration_seconds,
+                            prompt_eval_duration,
+                            prompt_eval_duration_seconds,
                         )
+                ollama_api_response_time_end = time.perf_counter()
+                total_ollama_api_processing_duration = ollama_api_response_time_end - ollama_api_response_time_start
             except (OllamaAPIError, OllamaResponseError, DirectoryNotWritableError,) as error:
                 error_helper(error)
                 continue  # Retry Ollama processing
@@ -1170,17 +1376,18 @@ def main() -> None:
                 break
             try:
                 sorted_original_file_path, sorted_ollama_file_path = move_paired_files(unique_id, id_staged_pair, burrowsift_sort_dir=built_path)
+                end_time = end_processing_time()
+                processing_duration = calc_total_processing_time(start_time, end_time)
             except (OriginalFileSortError, JSONFileSortError, FileSortRollbackError) as error:
                 error_helper(error)
                 break
             try:
-                final_record_sql = add_to_final_record(final_record, sorted_original_file_path, sorted_ollama_file_path)
+                final_record_sql = add_to_final_record(final_record, sorted_original_file_path, sorted_ollama_file_path, total_ollama_api_processing_duration, processing_duration, ai_model, model_num_ctx, max_prompt_tokens)
                 extract_record = extract_finalrecord_values_for_sqlite(final_record_sql)
                 insert_dict = insert_dict_into_sql(extract_record, db_connection)
-            except (DatabaseInsertionError) as error:
+            except (DatabaseInsertionError, DatabaseTableAlterError) as error:
                 error_helper(error)
-            break
-
+                break
             print(f"Metadata: {metadata}")
             print(f"Content preview: {content[:100] if content else 'No content'}")
             break

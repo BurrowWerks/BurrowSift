@@ -16,6 +16,10 @@ authors = [
 
 dependencies = [
     "duckdb",
+    "pypdf",
+    "python-docx",
+    "transformers",
+    "requests",
 ]
 
 [project.optional-dependencies]

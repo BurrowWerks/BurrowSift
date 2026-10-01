@@ -14,7 +14,9 @@ authors = [
     { name = "Richard Martin" }
 ]
 
-dependencies = []
+dependencies = [
+    "duckdb",
+]
 
 [project.optional-dependencies]
 dev = [

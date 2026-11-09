@@ -1,3 +1,5 @@
+import constants
+import config
 
 def build_AI_prompt_payload(structured_dict_json: str)-> str:
     prompt: str = f"""
@@ -36,9 +38,9 @@ Ensure the response conforms exactly to the supplied JSON schema.
 
 def build_AI_config_parameters() -> dict[str, str|int]:
     ai_config: dict[str, str|int] = {
-        "ai_model": "gemma4-12b-256k-test",
-        "model_num_ctx": 262144,
-        "max_prompt_tokens": 220000
+        "ai_model": config.AI_MODEL,
+        "model_num_ctx": constants.MAX_MODEL_NUM_CTX,
+        "max_prompt_tokens": constants.MAX_PROMPT_TOKENS
     }
     return ai_config
 

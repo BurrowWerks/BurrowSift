@@ -1,0 +1,5 @@
+
+MAX_DOCUMENT_TOKENS = 180000
+MAX_PROMPT_TOKENS = 220000
+MAX_MODEL_NUM_CTX = 262144
+SUPPORTED_FILE_TYPES: tuple[str, ...] = (".txt", ".pdf", ".docx",)

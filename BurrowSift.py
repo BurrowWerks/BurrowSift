@@ -1,13 +1,11 @@
-from os import stat_result
+import constants
+from typing import Any
 import sys
 from tkinter import filedialog
 import tkinter as tk
 from pathlib import Path
-from pypdf import PdfReader
-from transformers import AutoTokenizer, PreTrainedTokenizerBase
-from docx import Document
+from documents.readers import read_content
 import json
-from typing import Any, cast
 import os
 import time
 import requests
@@ -19,169 +17,17 @@ import sqlite3
 from datetime import datetime
 import duckdb
 from AI_payload import build_AI_config_parameters, build_AI_payload_category_summary, build_AI_prompt_payload
+import exceptions
+from documents.metadata import read_metadata
+from documents.readers import read_content
+from documents.tokens import document_token_count_check, gemma_token_count
+from processing.statistics import document_character_count_check, word_count_check, start_processing_time, end_processing_time, calc_total_processing_time
+from processing.records import build_final_json_record, add_to_final_record, build_structured_content
+from storage.json_store import write_final_record_to_json
 
 
-class InvalidFileTypeError(ValueError):
-    statement: str = ("Invalid file type. Please select a document file of types PDF, DOCX, or TXT.")
-    def __init__(self) -> None:
-            super().__init__(self.statement)
 
-class DocumentTooLargeError(ValueError):
-    statement: str = ("The document exceeds the maximum supported token limit. Please select a smaller document.")
-    def __init__(self) -> None:
-            super().__init__(self.statement)
-
-class InvalidFileError(FileNotFoundError):
-    statement: str = ("The selected file is not valid. Please select a document file of types PDF, DOCX, or TXT.")
-    def __init__(self):
-            super().__init__(self.statement)
-
-class FileNotReadableError(PermissionError):
-    statement: str = ("The selected file is not readable. Please select a different file.")
-    def __init__(self) -> None:
-            super().__init__(self.statement)
-
-
-class OriginalFileNotFoundError(FileNotFoundError):
-    statement: str = ("Original file not found in staged pair.")
-    def __init__(self) -> None:
-                super().__init__(self.statement)
-
-class JSONFileNotFoundError(FileNotFoundError):
-    statement: str = ("JSON file not found in staged pair.")
-    def __init__(self) -> None:
-                super().__init__(self.statement)
-
-class DirectoryNotWritableError(PermissionError):
-    statement = ("The selected directory is not writable. Please select a different directory.")
-    def __init__(self):
-            super().__init__(self.statement)
-
-class DirectoryNotReadableError(PermissionError):
-    statement: str = ("The selected directory is not readable. Please select a different directory.")
-    def __init__(self) -> None:
-            super().__init__(self.statement)
-
-class OllamaAPIError(RequestException):
-    statement: str = ("Error occurred while communicating with the Ollama API.")
-    def __init__(self) -> None:
-            super().__init__(self.statement)
-
-class OllamaResponseError(ValueError):
-    statement: str = ("Error occurred while processing the Ollama API response.")
-    def __init__(self) -> None:
-        super().__init__(self.statement)
-
-class OllamaResponseDecodingError(OllamaResponseError):
-    statement: str = ("Error occurred while decoding the Ollama API response.")
-
-class OllamaResponseFormatError(OllamaResponseError):
-    statement: str = ("Error occurred due to an unexpected format in the Ollama API response.")
-
-class StagedPairNotFoundError(KeyError):
-    statement: str = ("Staged pair could not be found for the provided document ID")
-    def __init__(self) -> None:
-            super().__init__(self.statement)
-
-class OriginalFileSortError(Exception):
-    statement: str = ("Original file could not be moved to the sorting destination.")
-    def __init__(self) -> None:
-            super().__init__(self.statement)
-
-class JSONFileSortError(Exception):
-    statement: str = ("JSON file could not be moved to the sorting destination.")
-    def __init__(self):
-            super().__init__(self.statement)
-
-class FileSortRollbackError(Exception):
-    statement = ("JSON file could not be moved to the sorting destination and the original file rollback failed.")
-    def __init__(self):
-            super().__init__(self.statement)
-
-class DatabaseCreationError(Exception): # Name needs changing later as this is poth creation not db creation
-    statement: str = ("database creation failed")
-    def __init__(self): 
-        super().__init__(self.statement)
-
-class DatabaseConnectionError(Exception): 
-    statement: str = ("connection to database failed")
-    def __init__(self):
-            super().__init__(self.statement)
-
-class DatabaseTableCreationError(Exception):
-    statement: str = ("database table could not be created or retrieved.")
-    def __init__(self):
-            super().__init__(self.statement)
-
-class DatabaseInsertionError(Exception):
-    statement: str = ("Dictionary failed to pass into database")
-    def __init__(self):
-        super().__init__(self.statement)
-
-class DuckDBDatabaseConnectionError(Exception): 
-    statement: str = ("connection to database failed")
-    def __init__(self):
-            super().__init__(self.statement)
-
-
-class DatabaseTableAlterError(Exception):
-    statement: str = ("database table could not be Altered.")
-    def __init__(self):
-            super().__init__(self.statement)
-
-class NoUUIDMatch(Exception):
-    statement: str = ("No UUID match was found in database.")
-
-    def __init__(self):
-            super().__init__(self.statement)
-
-class DuckDBInsertionError(Exception):
-    statement: str = ("Dictionary failed to pass into DuckDB database")
-    def __init__(self):
-        super().__init__(self.statement)
-
-class DatabaseRetrievalError(Exception):
-    statement: str = ("Failed to retrieve data from database.")
-    def __init__(self):
-        super().__init__(self.statement)
-
-class DuckDBRetrievalError(Exception):
-    statement: str = ("Failed to retrieve data from DuckDB database.")
-    def __init__(self):
-        super().__init__(self.statement)
-
-class DatabaseComparisonError(Exception):
-    statement: str = ("Failed to compare data between databases.")
-    def __init__(self):
-        super().__init__(self.statement)
-
-class DatabaseCloseError(Exception):
-    statement: str = ("Failed to close database connection.")
-    def __init__(self):
-        super().__init__(self.statement)
-
-class DuckDBDatabaseCloseError(Exception):
-    statement: str = ("Failed to close DuckDB database connection.")
-    def __init__(self):
-        super().__init__(self.statement)
-
-class OllamaCloseError(Exception):
-    statement: str = ("Failed to close Ollama process.")
-    def __init__(self):
-        super().__init__(self.statement)
-class InvalidAIConfigError(Exception):
-    statement: str = ("Invalid AI configuration.")
-    def __init__(self):
-        super().__init__(self.statement)
-
-tokenizer: PreTrainedTokenizerBase = cast(
-    PreTrainedTokenizerBase,
-    AutoTokenizer.from_pretrained(# pyright: ignore[reportUnknownMemberType]
-        pretrained_model_name_or_path="google/gemma-4-12B"
-    ),
-)
-
-def automatic_ollama_start() -> subprocess.Popen | None:
+def automatic_ollama_start() -> subprocess.Popen[bytes] | None:
     try:
         response: requests.Response = requests.get(url="http://localhost:11434/api/tags", timeout=5)
         if response.status_code == 200:
@@ -208,18 +54,18 @@ def automatic_ollama_start() -> subprocess.Popen | None:
             time.sleep(1)  # Wait for 1 second before the next poll
             if ollama_process.poll() is not None:
                 print("Ollama process terminated unexpectedly.")
-                raise OllamaAPIError()
+                raise exceptions.OllamaAPIError()
         ollama_process.terminate()  # Terminate the process if it didn't start successfully
         try:
             ollama_process.wait(timeout=5)  # Wait for the process to terminate
         except subprocess.TimeoutExpired:
             ollama_process.kill()  # Force kill if it didn't terminate
             ollama_process.wait()  # Wait for the process to be killed
-        raise OllamaAPIError()
-    except OllamaAPIError:
+        raise exceptions.OllamaAPIError()
+    except exceptions.OllamaAPIError:
         raise 
     except Exception as e:
-        raise OllamaAPIError() from e
+        raise exceptions.OllamaAPIError() from e
 
 def create_or_open_database() -> Path:
     try:
@@ -227,14 +73,14 @@ def create_or_open_database() -> Path:
         data_base_dir.mkdir(parents=True, exist_ok=True)
         data_base_path: Path = data_base_dir/"burrowsift.db"
     except (OSError) as e:
-        raise DatabaseCreationError() from e
+        raise exceptions.DatabaseCreationError() from e
     return data_base_path
 
 def connect_sqlite(data_base_path: Path) -> sqlite3.Connection:
     try:
         db_connect: sqlite3.Connection = sqlite3.connect(data_base_path)
     except (sqlite3.Error) as e:
-        raise DatabaseConnectionError() from e
+        raise exceptions.DatabaseConnectionError() from e
     return db_connect
 
 def create_db_table(db_connect:sqlite3.Connection) -> None:
@@ -257,7 +103,7 @@ def create_db_table(db_connect:sqlite3.Connection) -> None:
         cursor.execute(schema_query)
         db_connect.commit()
     except (sqlite3.Error) as e:
-        raise DatabaseTableCreationError() from e
+        raise exceptions.DatabaseTableCreationError() from e
 
 def alter_update_sqlite_table(db_connect: sqlite3.Connection)-> None:
     try:
@@ -298,7 +144,7 @@ def alter_update_sqlite_table(db_connect: sqlite3.Connection)-> None:
            
     except (sqlite3.Error) as e:
         db_connect.rollback()
-        raise DatabaseTableAlterError() from e
+        raise exceptions.DatabaseTableAlterError() from e
 
 
 def create_or_open_duckdb_path()-> Path:
@@ -307,17 +153,17 @@ def create_or_open_duckdb_path()-> Path:
         duckdb_dirs.mkdir(parents=True, exist_ok=True)
         duckdb_path: Path = duckdb_dirs/"burrowsift.analytics.duckdb"
     except (OSError) as e:
-        raise DatabaseCreationError() from e
+        raise exceptions.DatabaseCreationError() from e
     return duckdb_path
 
 def connect_to_duckdb(duckdb_path: Path)-> duckdb.DuckDBPyConnection:
     try:
         duckdb_connect = duckdb.connect(str(duckdb_path))
     except (duckdb.Error) as e:
-        raise DuckDBDatabaseConnectionError() from e
+        raise exceptions.DuckDBDatabaseConnectionError() from e
     return duckdb_connect
 
-def create_duckdb_table(duckdb_connect) -> None:
+def create_duckdb_table(duckdb_connect: duckdb.DuckDBPyConnection) -> None:
     try:
         cursor = duckdb_connect.cursor()
         schema_query = """
@@ -346,19 +192,19 @@ def create_duckdb_table(duckdb_connect) -> None:
         cursor.execute(schema_query)
         duckdb_connect.commit()
     except (duckdb.Error) as e:
-        raise DatabaseTableCreationError() from e
+        raise exceptions.DatabaseTableCreationError() from e
 
 def close_sqlite_connection(db_connect: sqlite3.Connection) -> None:
     try:
         db_connect.close()
     except (sqlite3.Error) as e:
-        raise DatabaseCloseError() from e
+        raise exceptions.DatabaseCloseError() from e
 
 def close_duckdb_connection(duckdb_connect: duckdb.DuckDBPyConnection) -> None:
     try:
         duckdb_connect.close()
     except (duckdb.Error) as e:
-        raise DuckDBDatabaseCloseError() from e
+        raise exceptions.DuckDBDatabaseCloseError() from e
 
 
 def request_document() -> str:
@@ -372,10 +218,10 @@ def request_document() -> str:
 
     if file_path:
         print(f"Selected file: {file_path}")
-        if not file_path.lower().endswith(('.pdf', '.docx', '.txt')):
-            raise InvalidFileTypeError()
+        if not file_path.lower().endswith(constants.SUPPORTED_FILE_TYPES):
+            raise exceptions.InvalidFileTypeError()
         elif not Path(file_path).is_file():
-            raise InvalidFileError()
+            raise exceptions.InvalidFileError()
         return file_path
     else:
         sys.exit("No file selected. Exiting the program.")
@@ -383,121 +229,6 @@ def request_document() -> str:
 def generate_unique_id() -> str:
     unique_id = str(uuid4())
     return unique_id
-
-def start_processing_time():
-    processing_time_start = time.perf_counter()
-    return processing_time_start
-
-MAX_DOCUMENT_TOKENS = 180000
-
-def read_metadata(file_path: str) -> dict[str, Any]:
-    if not Path(file_path).is_file(): 
-        raise InvalidFileError()
-    file_data_path = Path(file_path)
-    file_data_stat: stat_result = file_data_path.stat()
-    metadata: dict[str, Any] = {"file_name": file_data_path.name,
-                                "file_size": file_data_stat.st_size,
-                                "file_type": file_data_path.suffix,
-                                "last_modified": file_data_stat.st_mtime,
-                                "created": file_data_stat.st_birthtime,
-                                "absolute_path": str(object=file_data_path.resolve())}
-    return metadata
-
-def read_content(file_data_path: str) -> str:
-    if not Path(file_data_path).is_file():
-        raise InvalidFileError()
-    if not os.access(path=file_data_path, mode=os.R_OK):
-        raise FileNotReadableError()
-    file_extension: str = Path(file_data_path).suffix.lower()
-
-    if file_extension == '.pdf':
-        return read_pdf_content(file_data_path)
-
-    if file_extension == '.docx':
-        return read_docx_content(file_data_path)
-
-    if file_extension == '.txt':
-        return read_txt_content(file_data_path)
-
-    raise InvalidFileTypeError()
-
-def read_pdf_content(file_data_path: str) -> str:
-    if not Path(file_data_path).is_file():
-        raise InvalidFileError()
-    if not os.access(path=file_data_path, mode=os.R_OK):
-        raise FileNotReadableError()
-    read_pdf: Any = PdfReader(stream=file_data_path)
-    pdf_content: list[str] = []
-    for page in read_pdf.pages:
-        page_text: str = page.extract_text() or ""
-        pdf_content.append(page_text)
-    return "\n".join(pdf_content)
-
-def read_docx_content(file_data_path: str) -> str:
-    if not Path(file_data_path).is_file():
-        raise InvalidFileError()
-    if not os.access(path=file_data_path, mode=os.R_OK):
-        raise FileNotReadableError()
-    document: Any = Document(docx=file_data_path)
-    docx_content: list[str] = []
-    for paragraph in document.paragraphs:
-        docx_content.append(paragraph.text)
-    return "\n\n".join(docx_content)
-
-def read_txt_content(file_data_path: str) -> str:
-    if not Path(file_data_path).is_file():
-        raise InvalidFileError()
-    if not os.access(path=file_data_path, mode=os.R_OK):
-        raise FileNotReadableError()
-    with open(file=file_data_path, mode='r', encoding='utf-8') as text_file:
-        text_content: str = text_file.read()
-    return text_content
-
-def gemma_token_count(text: str) -> int:
-    token_ids: list[int] = tokenizer.encode( # pyright: ignore[reportUnknownMemberType]
-        text,
-        add_special_tokens=False,
-    )
-    return len(token_ids)
-
-# Chunking to be added in in 0.3.0
-def document_token_count_check(content: str) -> int:
-    max_token_limit: int = MAX_DOCUMENT_TOKENS
-    document_token_count: int = gemma_token_count(content)
-    print(document_token_count)
-    if document_token_count > max_token_limit:
-        raise DocumentTooLargeError()
-    return document_token_count
-
-def document_character_count_check(content: str) -> int:
-    character_count: int = len(content)
-    return character_count
-
-def word_count_check(content: str) -> int:
-    word_count: int = len(content.split())
-    return word_count
-
-def build_structured_content(metadata: dict[str, Any], content: str) -> dict[str, Any]:
-    structured_dict: dict[str, dict[str, Any]] = {"metadata": metadata, 
-                                                  "doc_content": {"content": content
-                                                                  }}
-    return structured_dict
-
-def write_content_to_json(structured_dict: dict[str, Any]) -> None:
-    root = tk.Tk()
-    root.withdraw()  # Hide the main window
-
-    output_path: str = filedialog.asksaveasfilename(title="Save JSON file", defaultextension=".json", filetypes=[("JSON files", "*.json")])
-
-    root.destroy()  # Close the Tkinter window
-
-    if not output_path:
-        return  # User canceled the save dialog
-    if not os.access(path=os.path.dirname(output_path), mode=os.W_OK):
-        raise DirectoryNotWritableError()   
-
-    with open(file=output_path, mode='w', encoding='utf-8') as json_file:
-        json.dump(obj=structured_dict, fp=json_file, indent=4)
 
 def create_ollama_output_path(source_file_name: str, unique_id: str,)  -> tuple[Path, Path]:
     holding_dir: Path = Path(r"B:\Development\Projects\Learning\Python\BurrowSift\Holding")
@@ -512,15 +243,7 @@ def turn_json_string_to_dict(json_string: str) -> dict[str, Any]:
         response_dict: dict[str, Any] = json.loads(json_string)
         return response_dict
     except json.JSONDecodeError as e:
-        raise OllamaResponseDecodingError() from e
-
-def write_ollama_response_to_json(temp_file: str, response_dict: dict[str, Any]) -> None:
-    if not os.access(path=os.path.dirname(temp_file), mode=os.W_OK):
-        raise DirectoryNotWritableError()
-
-    with open(file=temp_file, mode='w', encoding='utf-8') as json_file:
-        json.dump(obj=response_dict, fp=json_file, indent=4)
-
+        raise exceptions.OllamaResponseDecodingError() from e
 
 def send_to_ollama_api(structured_dict: dict[str, Any], source_file_name: str, unique_id: str,) -> tuple[dict[str, Any], int, int, int, int, float, int, float, str, int, int]:
     url = "http://localhost:11434/api/generate"
@@ -539,17 +262,17 @@ def send_to_ollama_api(structured_dict: dict[str, Any], source_file_name: str, u
     max_prompt_tokens = ai_config["max_prompt_tokens"]
 
     if not isinstance(ai_model, str) or not isinstance(model_num_ctx, int) or not isinstance(max_prompt_tokens, int):
-        raise InvalidAIConfigError()
+        raise exceptions.InvalidAIConfigError()
        
     if model_num_ctx <= 0 or max_prompt_tokens <= 0:
-        raise InvalidAIConfigError()
+        raise exceptions.InvalidAIConfigError()
     
     if (model_num_ctx-max_prompt_tokens < 16384):
-        raise InvalidAIConfigError()
+        raise exceptions.InvalidAIConfigError()
     
     tokens_prompt: int = gemma_token_count(text=prompt)
     if tokens_prompt > max_prompt_tokens:
-        raise DocumentTooLargeError()
+        raise exceptions.DocumentTooLargeError()
 
     payload_category_summary: dict[str, Any] = build_AI_payload_category_summary(
         ai_model=ai_model,
@@ -560,7 +283,7 @@ def send_to_ollama_api(structured_dict: dict[str, Any], source_file_name: str, u
     try:
         response_category_summary = requests.post(url, json=payload_category_summary, timeout=(10, 300))
     except RequestException as e:
-        raise OllamaAPIError() from e
+        raise exceptions.OllamaAPIError() from e
 
     if response_category_summary.status_code == 200:
         ollama_response_json: dict[str, Any] = response_category_summary.json() #Could Fail if the response is not valid JSON, but we are assuming it is valid JSON for now.
@@ -588,41 +311,22 @@ def send_to_ollama_api(structured_dict: dict[str, Any], source_file_name: str, u
         print(f"Completion tokens used: {completion_tokens}")
         return response_data, prompt_tokens, completion_tokens, tokens_prompt, inference_duration, inference_duration_seconds, prompt_eval_duration, prompt_eval_duration_seconds, ai_model, model_num_ctx, max_prompt_tokens,
     else:
-        raise OllamaAPIError()
+        raise exceptions.OllamaAPIError()
 
 def ollama_response_validation(response_dict: dict[str, Any]) -> None:
     required_keys = {"category":str, "summary":str, "subcategory":str, "tags": list}
     if not set(required_keys).issubset(response_dict.keys()):
-        raise OllamaResponseFormatError()
+        raise exceptions.OllamaResponseFormatError()
     for key, expected_type in required_keys.items():
         if not isinstance(response_dict[key], expected_type):
-            raise OllamaResponseFormatError()
+            raise exceptions.OllamaResponseFormatError()
     for tags in response_dict["tags"]:
         if not isinstance(tags, str):
-            raise OllamaResponseFormatError()
+            raise exceptions.OllamaResponseFormatError()
 
 def build_processing_stats(character_count:int, word_count:int, tokenizer_token_count:int, prompt_tokens:int, completion_tokens:int, tokens_prompt: int, inference_duration: int, inference_duration_seconds: float, prompt_eval_duration: int, prompt_eval_duration_seconds: float) -> dict[str, int|float]:
     processing_stats: dict[str, int|float] = {"character_count": character_count, "word_count": word_count, "tokenizer_token_count": tokenizer_token_count, "tokens_prompt": tokens_prompt, "prompt_eval_count": prompt_tokens, "eval_count": completion_tokens, "inference_duration": inference_duration, "inference_duration_seconds": inference_duration_seconds, "prompt_eval_duration": prompt_eval_duration, "prompt_eval_duration_seconds": prompt_eval_duration_seconds}
     return processing_stats
-
-def build_final_json_record(metadata: dict[str, Any], content: str, ollama_response: dict[str, Any], unique_id: str, source_file_name: str, processing_stats:dict[str, int| float]) -> dict[str, Any]:
-    final_record: dict[str, Any] = {
-        "metadata": metadata,
-        "document_identifier": unique_id,
-        "processing_stats": processing_stats,
-        "source_file_name": source_file_name,
-        "ollama_response": ollama_response,   
-    }
-    return final_record
-
-def write_final_record_to_json(final_record: dict[str, Any], auto_file_name: Path) -> Path:
-    if not os.access(path=os.path.dirname(p=auto_file_name), mode=os.W_OK):
-        raise DirectoryNotWritableError()   
-
-    with open(file=auto_file_name, mode='w', encoding='utf-8') as json_file:
-        json.dump(obj=final_record, fp=json_file, indent=4)
-
-    return auto_file_name
 
 def pair_identity(unique_id: str, moved_original_file: Path, ollama_output_path: Path) -> dict[str, tuple[Path, Path]]: 
     staged_pair: tuple[Path, Path] = (moved_original_file, ollama_output_path)
@@ -631,13 +335,13 @@ def pair_identity(unique_id: str, moved_original_file: Path, ollama_output_path:
 
 def pair_contents_validation(unique_id:str ,id_staged_pair:dict[str,tuple[Path, Path]]) -> None:
     if unique_id not in id_staged_pair:
-        raise StagedPairNotFoundError()
+        raise exceptions.StagedPairNotFoundError()
     get_staged_pair: tuple[Path, Path] = id_staged_pair[unique_id]
     moved_original_file, ollama_output_path = get_staged_pair
     if not moved_original_file.is_file():
-        raise OriginalFileNotFoundError()
+        raise exceptions.OriginalFileNotFoundError()
     if not ollama_output_path.is_file():
-        raise JSONFileNotFoundError()
+        raise exceptions.JSONFileNotFoundError()
 
 def routing_destination(auto_file_name: Path) -> tuple[str, str]:
     with open(file=auto_file_name, mode='r', encoding='utf-8') as file:
@@ -658,47 +362,29 @@ def move_paired_files(unique_id: str, id_staged_pair: dict[str, tuple[Path, Path
     try:
         sorted_original_file_path = Path(shutil.move(src=moved_original_file, dst=burrowsift_sort_dir))
     except (OSError, shutil.Error) as error:
-        raise OriginalFileSortError() from error
+        raise exceptions.OriginalFileSortError() from error
     if not sorted_original_file_path.is_file():
-        raise OriginalFileSortError()
+        raise exceptions.OriginalFileSortError()
     try:
         sorted_ollama_file_path = Path(shutil.move(src=ollama_output_path, dst=burrowsift_sort_dir))
     except (OSError, shutil.Error) as error:
         try:
             move_back_original_file = Path(shutil.move(src=sorted_original_file_path, dst=moved_original_file))
         except (OSError, shutil.Error) as rollback_error:
-            raise FileSortRollbackError() from rollback_error
+            raise exceptions.FileSortRollbackError() from rollback_error
         if not move_back_original_file.is_file():
-            raise FileSortRollbackError()
-        raise JSONFileSortError() from error
+            raise exceptions.FileSortRollbackError()
+        raise exceptions.JSONFileSortError() from error
     if not sorted_ollama_file_path.is_file():
         try:
             move_back_original_file = Path(shutil.move(src=sorted_original_file_path, dst=moved_original_file))
         except (OSError, shutil.Error) as rollback_error:
-            raise FileSortRollbackError() from rollback_error
+            raise exceptions.FileSortRollbackError() from rollback_error
         if not move_back_original_file.is_file():
-            raise FileSortRollbackError()
-        raise JSONFileSortError()
+            raise exceptions.FileSortRollbackError()
+        raise exceptions.JSONFileSortError()
     return sorted_original_file_path, sorted_ollama_file_path
-
-def end_processing_time():
-    processing_time_end = time.perf_counter()
-    return processing_time_end
-
-def calc_total_processing_time(procesing_time_start, processing_time_end):
-    processing_duration = processing_time_end - procesing_time_start
-    return processing_duration
     
-def add_to_final_record(final_record: dict[str, Any], sorted_original_file_path, sorted_ollama_file_path, total_ollama_processing_duration, total_doc_processing_duration, ai_model, model_num_ctx, max_prompt_tokens):
-    final_record["current_file_path"] = str(sorted_original_file_path)
-    final_record["json_file_path"] = str(sorted_ollama_file_path)
-    final_record["total_ollama_processing_duration"] = total_ollama_processing_duration
-    final_record["total_doc_processing_duration"] = total_doc_processing_duration
-    final_record["ai_model"] = ai_model
-    final_record["model_max_tokens"] = model_num_ctx
-    final_record["max_processing_tokens"] = max_prompt_tokens
-    return final_record
-
 def extract_finalrecord_values_for_sqlite(final_record: dict[str, Any])-> dict[str, Any]:
     local_time = datetime.now().astimezone().isoformat()
     sql_dict = {"document_identifier": final_record["document_identifier"],
@@ -739,9 +425,9 @@ def insert_dict_into_sql(sql_dict: dict[str, Any], db_connect: sqlite3.Connectio
         db_connect.commit()
     except (sqlite3.Error) as error:
         db_connect.rollback()
-        raise DatabaseInsertionError() from error
+        raise exceptions.DatabaseInsertionError() from error
 
-def retrieve_doc_analytics_from_sqlite(unique_id, db_connect):
+def retrieve_doc_analytics_from_sqlite(unique_id: str, db_connect: sqlite3.Connection):
     try:
         cursor = db_connect.cursor()
 
@@ -772,25 +458,25 @@ def retrieve_doc_analytics_from_sqlite(unique_id, db_connect):
         cursor.execute(query, (unique_id,))
         row = cursor.fetchone()
         if row is None:
-            raise NoUUIDMatch()
+            raise exceptions.NoUUIDMatch()
         column_names = [description[0] for description in cursor.description]
         analytics_dict = dict(zip(column_names, row))
     except (sqlite3.Error) as error:
-        raise DatabaseRetrievalError() from error
+        raise exceptions.DatabaseRetrievalError() from error
     return analytics_dict
 
-def retrieve_all_document_identifiers_from_sqlite(db_connect):
+def retrieve_all_document_identifiers_from_sqlite(db_connect: sqlite3.Connection) -> set[str]:
     try:
-        cursor = db_connect.cursor()
+        cursor: sqlite3.Cursor = db_connect.cursor()
         query = """SELECT "document_identifier" FROM documents"""
         cursor.execute(query)
-        rows = cursor.fetchall()
+        rows: list[Any] = cursor.fetchall()
         document_identifiers_sqlite = {row[0] for row in rows}
         return document_identifiers_sqlite
     except (sqlite3.Error) as error:
-        raise DatabaseRetrievalError() from error
+        raise exceptions.DatabaseRetrievalError() from error
 
-def insert_doc_analytics_into_duckdb(analytics_dict: dict[str, Any], duckdb_connection) -> None:
+def insert_doc_analytics_into_duckdb(analytics_dict: dict[str, Any], duckdb_connection: duckdb.DuckDBPyConnection) -> None:
     try:
         cursor = duckdb_connection.cursor()
         columns = ", ".join(analytics_dict.keys())
@@ -800,9 +486,9 @@ def insert_doc_analytics_into_duckdb(analytics_dict: dict[str, Any], duckdb_conn
         duckdb_connection.commit()
     except (duckdb.Error) as error:
         duckdb_connection.rollback()
-        raise DuckDBInsertionError() from error
+        raise exceptions.DuckDBInsertionError() from error
 
-def retrieve_all_document_identifiers_from_duckdb(duckdb_connection):
+def retrieve_all_document_identifiers_from_duckdb(duckdb_connection: duckdb.DuckDBPyConnection) -> set[str]:
     try:
         cursor = duckdb_connection.cursor()
         query = """SELECT "document_identifier" FROM document_analytics"""
@@ -810,14 +496,14 @@ def retrieve_all_document_identifiers_from_duckdb(duckdb_connection):
         rows = cursor.fetchall()
         document_identifiers_duckdb = {row[0] for row in rows}
     except (duckdb.Error) as error:
-        raise DuckDBRetrievalError() from error
+        raise exceptions.DuckDBRetrievalError() from error
     return document_identifiers_duckdb
 
 def compare_sqlite_and_duckdb_identifiers(sqlite_identifiers: set[str], duckdb_identifiers: set[str]) -> set[str]:
     missing_in_duckdb = sqlite_identifiers - duckdb_identifiers
     return missing_in_duckdb
 
-def insert_missing_identifiers_into_duckdb(missing_identifiers: set[str], db_connection, duckdb_connection) -> None:
+def insert_missing_identifiers_into_duckdb(missing_identifiers: set[str], db_connection: sqlite3.Connection, duckdb_connection: duckdb.DuckDBPyConnection) -> None:
     for unique_id in missing_identifiers:
         missing_analytics_dict = retrieve_doc_analytics_from_sqlite(unique_id, db_connection)
         insert_doc_analytics_into_duckdb(missing_analytics_dict, duckdb_connection)
@@ -829,72 +515,72 @@ def main() -> None:
     while True:
         db_connection: sqlite3.Connection | None = None
         duckdb_connection: duckdb.DuckDBPyConnection | None = None
-        ollama_process: subprocess.Popen | None = None
+        ollama_process: subprocess.Popen[bytes] | None = None
         try:
             try:
                 ollama_process = automatic_ollama_start()
-            except (OllamaAPIError) as error:
+            except (exceptions.OllamaAPIError) as error:
                 error_helper(error)
                 continue  
             try:
                 db_path: Path = create_or_open_database()
-            except (DatabaseCreationError) as error:
+            except (exceptions.DatabaseCreationError) as error:
                 error_helper(error)
                 break
             try:
                 db_connection = connect_sqlite(data_base_path=db_path)
-            except (DatabaseConnectionError) as error:
+            except (exceptions.DatabaseConnectionError) as error:
                 error_helper(error)
                 break 
             try:
                 create_db_table(db_connect=db_connection)
-            except (DatabaseTableCreationError) as error:
+            except (exceptions.DatabaseTableCreationError) as error:
                 error_helper(error)
                 break
             try:
                 alter_update_sqlite_table(db_connection)
-            except (DatabaseTableAlterError) as error:
+            except (exceptions.DatabaseTableAlterError) as error:
                 error_helper(error)
                 break 
             try:
                 duckdb_path = create_or_open_duckdb_path()
-            except (DatabaseCreationError) as error:
+            except (exceptions.DatabaseCreationError) as error:
                 error_helper(error)
                 break 
             try:
                 duckdb_connection = connect_to_duckdb(duckdb_path)
-            except (DuckDBDatabaseConnectionError) as error:
+            except (exceptions.DuckDBDatabaseConnectionError) as error:
                 error_helper(error)
                 break
             try:
                 create_duckdb_table(duckdb_connection)
-            except (DatabaseTableCreationError) as error:
+            except (exceptions.DatabaseTableCreationError) as error:
                 error_helper(error)
                 break
             try:
                 document_identifiers_sqlite_set = retrieve_all_document_identifiers_from_sqlite(db_connection)
-            except (DatabaseRetrievalError) as error:
+            except (exceptions.DatabaseRetrievalError) as error:
                 error_helper(error)
                 break
             try:
                 document_identifiers_duckdb_set = retrieve_all_document_identifiers_from_duckdb(duckdb_connection)
-            except (DuckDBRetrievalError) as error:
+            except (exceptions.DuckDBRetrievalError) as error:
                 error_helper(error)
                 break
             try:
                 missing_identifiers_set = compare_sqlite_and_duckdb_identifiers(document_identifiers_sqlite_set, document_identifiers_duckdb_set)
-            except (DatabaseComparisonError) as error:
+            except (exceptions.DatabaseComparisonError) as error:
                 error_helper(error)
                 break
             try:
                 insert_missing_identifiers_into_duckdb(missing_identifiers_set, db_connection, duckdb_connection)
-            except (DatabaseInsertionError, DatabaseRetrievalError, NoUUIDMatch, DuckDBInsertionError) as error:
+            except (exceptions.DatabaseInsertionError, exceptions.DatabaseRetrievalError, exceptions.NoUUIDMatch, exceptions.DuckDBInsertionError) as error:
                 error_helper(error)
                 break
             try:
                 file_path: str = request_document()
                 start_time = start_processing_time()
-            except (InvalidFileError, InvalidFileTypeError) as error:
+            except (exceptions.InvalidFileError, exceptions.InvalidFileTypeError) as error:
                 error_helper(error)
                 continue  # Prompt the user to select a file again
             try:
@@ -903,7 +589,7 @@ def main() -> None:
                 character_count: int = document_character_count_check(content)
                 word_count: int = word_count_check(content)
                 tokenizer_token_count: int = document_token_count_check(content)
-            except (InvalidFileError, InvalidFileTypeError, FileNotReadableError, DocumentTooLargeError) as error:
+            except (exceptions.InvalidFileError, exceptions.InvalidFileTypeError, exceptions.FileNotReadableError, exceptions.DocumentTooLargeError) as error:
                 error_helper(error)
                 continue  # Prompt the user to select a file again
             print(f"character count: {character_count}")
@@ -935,17 +621,17 @@ def main() -> None:
                             )
                     ollama_api_response_time_end = time.perf_counter()
                     total_ollama_api_processing_duration = ollama_api_response_time_end - ollama_api_response_time_start
-                except (OllamaAPIError, OllamaResponseError, DirectoryNotWritableError,) as error:
+                except (exceptions.OllamaAPIError, exceptions.OllamaResponseError, exceptions.DirectoryNotWritableError,) as error:
                     error_helper(error)
                     continue  # Retry Ollama processing
                 break  # Exit the inner loop if no exception occurs
-            final_record: dict[str, Any] = build_final_json_record(metadata, content, ollama_response, unique_id, source_file_name, processing_stats)
+            final_record: dict[str, Any] = build_final_json_record(metadata, ollama_response=ollama_response, unique_id=unique_id, source_file_name=source_file_name, processing_stats=processing_stats)
             while True:
                 try:
                     auto_named_file,  holding_dir, = create_ollama_output_path(source_file_name, unique_id)
                     
                     ollama_output_holding_path: Path = write_final_record_to_json(final_record, auto_file_name=auto_named_file)
-                except (DirectoryNotWritableError) as error:
+                except (exceptions.DirectoryNotWritableError) as error:
                     error_helper(error)
                     continue
                 try:
@@ -956,7 +642,7 @@ def main() -> None:
                 try:    
                     id_staged_pair: dict[str, tuple[Path, Path]] = pair_identity(unique_id, moved_original_file, ollama_output_path=ollama_output_holding_path)
                     pair_contents_validation(unique_id, id_staged_pair)
-                except (StagedPairNotFoundError, OriginalFileNotFoundError, JSONFileNotFoundError) as error:
+                except (exceptions.StagedPairNotFoundError, exceptions.OriginalFileNotFoundError, exceptions.JSONFileNotFoundError) as error:
                     error_helper(error)
                     break
                 try:
@@ -969,20 +655,20 @@ def main() -> None:
                     sorted_original_file_path, sorted_ollama_file_path = move_paired_files(unique_id, id_staged_pair, burrowsift_sort_dir=built_path)
                     end_time = end_processing_time()
                     processing_duration = calc_total_processing_time(start_time, end_time)
-                except (OriginalFileSortError, JSONFileSortError, FileSortRollbackError) as error:
+                except (exceptions.OriginalFileSortError, exceptions.JSONFileSortError, exceptions.FileSortRollbackError) as error:
                     error_helper(error)
                     break
                 try:
                     final_record_sql = add_to_final_record(final_record, sorted_original_file_path, sorted_ollama_file_path, total_ollama_api_processing_duration, processing_duration, ai_model, model_num_ctx, max_prompt_tokens)
                     extract_record = extract_finalrecord_values_for_sqlite(final_record_sql)
                     insert_dict = insert_dict_into_sql(extract_record, db_connection) #Saved Insert variable for debugging purposes, or later use, but not used in the final code.
-                except (DatabaseInsertionError, DatabaseTableAlterError,) as error:
+                except (exceptions.DatabaseInsertionError, exceptions.DatabaseTableAlterError,) as error:
                     error_helper(error)
                     break
                 try:
                     analytics_dict = retrieve_doc_analytics_from_sqlite(unique_id, db_connection)
                     insert_into_duckdb = insert_doc_analytics_into_duckdb(analytics_dict, duckdb_connection) #Saved Insert variable for debugging purposes, or later use, but not used in the final code.
-                except (DuckDBInsertionError, NoUUIDMatch, DatabaseRetrievalError, DuckDBRetrievalError) as error:
+                except (exceptions.DuckDBInsertionError, exceptions.NoUUIDMatch, exceptions.DatabaseRetrievalError, exceptions.DuckDBRetrievalError) as error:
                     error_helper(error)
                     break
                 
@@ -994,12 +680,12 @@ def main() -> None:
             if duckdb_connection is not None:
                 try:
                     close_duckdb_connection(duckdb_connection)
-                except (DuckDBDatabaseCloseError) as error:
+                except (exceptions.DuckDBDatabaseCloseError) as error:
                     print(f"Error occurred while closing DuckDB connection: {error}")
             if db_connection is not None:
                 try:
                     close_sqlite_connection(db_connection)
-                except (DatabaseCloseError) as error:
+                except (exceptions.DatabaseCloseError) as error:
                     print(f"Error occurred while closing SQLite connection: {error}")
             if ollama_process is not None:
                 try:

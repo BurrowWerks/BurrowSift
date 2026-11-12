@@ -4,72 +4,68 @@ import sys
 from tkinter import filedialog
 import tkinter as tk
 from pathlib import Path
-from documents.readers import read_content
 import json
-import os
 import time
-import requests
-from requests.exceptions import RequestException
 from uuid import uuid4
 import subprocess
 import shutil
 import sqlite3
 import duckdb
-from AI_payload import build_AI_config_parameters, build_AI_payload_category_summary, build_AI_prompt_payload
 import exceptions
-from storage.sqlite_storage import create_or_open_database, connect_sqlite, create_db_table, alter_update_sqlite_table, close_sqlite_connection, extract_finalrecord_values_for_sqlite, insert_dict_into_sql, retrieve_doc_analytics_from_sqlite, retrieve_all_document_identifiers_from_sqlite
-from storage.duckdb_store import create_or_open_duckdb_path, connect_to_duckdb, create_duckdb_table, close_duckdb_connection, insert_doc_analytics_into_duckdb, retrieve_all_document_identifiers_from_duckdb
-from storage.database_sync import compare_sqlite_and_duckdb_identifiers, insert_missing_identifiers_into_duckdb
-from filing.staging import create_ollama_output_path, pair_identity, pair_contents_validation
-from filing.routing import routing_destination, build_destination_path, move_paired_files
+from storage.sqlite_storage import (
+    create_or_open_database, 
+    connect_sqlite, 
+    create_db_table, 
+    alter_update_sqlite_table, 
+    close_sqlite_connection, 
+    extract_finalrecord_values_for_sqlite, 
+    insert_dict_into_sql, 
+    retrieve_doc_analytics_from_sqlite, 
+    retrieve_all_document_identifiers_from_sqlite
+    )
+from storage.duckdb_store import (
+   create_or_open_duckdb_path,
+   connect_to_duckdb, 
+   create_duckdb_table, 
+   close_duckdb_connection, 
+   insert_doc_analytics_into_duckdb, 
+   retrieve_all_document_identifiers_from_duckdb
+    )
+from storage.database_sync import (
+    compare_sqlite_and_duckdb_identifiers,
+    insert_missing_identifiers_into_duckdb
+    )
+from filing.staging import (
+    create_ollama_output_path, 
+    pair_identity, 
+    pair_contents_validation
+    )
+from filing.routing import (
+    routing_destination, 
+    build_destination_path, 
+    move_paired_files
+)
 from documents.metadata import read_metadata
 from documents.readers import read_content
-from documents.tokens import document_token_count_check, gemma_token_count
-from processing.statistics import document_character_count_check, word_count_check, start_processing_time, end_processing_time, calc_total_processing_time
-from processing.records import build_structured_content, build_final_json_record, add_to_final_record
+from documents.tokens import document_token_count_check
+from processing.statistics import (
+    document_character_count_check, 
+   word_count_check, 
+   start_processing_time, 
+   end_processing_time, 
+   calc_total_processing_time, 
+   build_processing_stats
+)
+from processing.records import (
+    build_structured_content, 
+    build_final_json_record, 
+    add_to_final_record
+)
 from storage.json_store import write_final_record_to_json
-
-
-
-def automatic_ollama_start() -> subprocess.Popen[bytes] | None:
-    try:
-        response: requests.Response = requests.get(url="http://localhost:11434/api/tags", timeout=5)
-        if response.status_code == 200:
-            print("Ollama API is already running.")
-            return None
-    except RequestException:
-        pass  # Ollama API is not running, proceed to start it
-
-    try:
-        ollama_env = os.environ.copy()
-        ollama_env["OLLAMA_FLASH_ATTENTION"] = "1"
-        ollama_env["OLLAMA_KV_CACHE_TYPE"] = "q8_0"
-
-        ollama_process = subprocess.Popen(args=["ollama", "serve"], env=ollama_env,)
-        
-        for _ in range(10):  # Poll up to 10 times
-            try:
-                polling_response = requests.get("http://localhost:11434/api/tags", timeout=1)
-                if polling_response.status_code == 200:
-                    print("Ollama API started successfully.")
-                    return ollama_process  # Ollama API is now running
-            except RequestException:
-                pass  # Continue polling
-            time.sleep(1)  # Wait for 1 second before the next poll
-            if ollama_process.poll() is not None:
-                print("Ollama process terminated unexpectedly.")
-                raise exceptions.OllamaAPIError()
-        ollama_process.terminate()  # Terminate the process if it didn't start successfully
-        try:
-            ollama_process.wait(timeout=5)  # Wait for the process to terminate
-        except subprocess.TimeoutExpired:
-            ollama_process.kill()  # Force kill if it didn't terminate
-            ollama_process.wait()  # Wait for the process to be killed
-        raise exceptions.OllamaAPIError()
-    except exceptions.OllamaAPIError:
-        raise 
-    except Exception as e:
-        raise exceptions.OllamaAPIError() from e
+from AI_ollama_client import (
+    send_to_ollama_api, 
+    automatic_ollama_start
+)
 
 
 def request_document() -> str:
@@ -94,96 +90,6 @@ def request_document() -> str:
 def generate_unique_id() -> str:
     unique_id = str(uuid4())
     return unique_id
-
-def turn_json_string_to_dict(json_string: str) -> dict[str, Any]:
-    try:
-        response_dict: dict[str, Any] = json.loads(json_string)
-        return response_dict
-    except json.JSONDecodeError as e:
-        raise exceptions.OllamaResponseDecodingError() from e
-
-def send_to_ollama_api(structured_dict: dict[str, Any], source_file_name: str, unique_id: str,) -> tuple[dict[str, Any], int, int, int, int, float, int, float, str, int, int]:
-    url = "http://localhost:11434/api/generate"
-
-    structured_dict_json = json.dumps(structured_dict, indent=4)
-
-    prompt: str = build_AI_prompt_payload(structured_dict_json=structured_dict_json)
-
-    ai_config = build_AI_config_parameters()
-
-    if "ai_model" not in ai_config or "model_num_ctx" not in ai_config or "max_prompt_tokens" not in ai_config:
-        raise KeyError("Missing required AI configuration keys.")
-
-    ai_model = ai_config["ai_model"]
-    model_num_ctx = ai_config["model_num_ctx"]
-    max_prompt_tokens = ai_config["max_prompt_tokens"]
-
-    if not isinstance(ai_model, str) or not isinstance(model_num_ctx, int) or not isinstance(max_prompt_tokens, int):
-        raise exceptions.InvalidAIConfigError()
-       
-    if model_num_ctx <= 0 or max_prompt_tokens <= 0:
-        raise exceptions.InvalidAIConfigError()
-    
-    if (model_num_ctx-max_prompt_tokens < 16384):
-        raise exceptions.InvalidAIConfigError()
-    
-    tokens_prompt: int = gemma_token_count(text=prompt)
-    if tokens_prompt > max_prompt_tokens:
-        raise exceptions.DocumentTooLargeError()
-
-    payload_category_summary: dict[str, Any] = build_AI_payload_category_summary(
-        ai_model=ai_model,
-        prompt=prompt,
-        model_num_ctx=model_num_ctx,
-    )
-
-    try:
-        response_category_summary = requests.post(url, json=payload_category_summary, timeout=(10, 300))
-    except RequestException as e:
-        raise exceptions.OllamaAPIError() from e
-
-    if response_category_summary.status_code == 200:
-        ollama_response_json: dict[str, Any] = response_category_summary.json() #Could Fail if the response is not valid JSON, but we are assuming it is valid JSON for now.
-
-        prompt_tokens: int = ollama_response_json.get("prompt_eval_count", 0)
-        completion_tokens: int = ollama_response_json.get("eval_count", 0)
-        inference_duration: int = ollama_response_json.get("eval_duration", 0)
-        inference_duration_seconds: float = inference_duration / 1000000000
-        prompt_eval_duration: int = ollama_response_json.get("prompt_eval_duration", 0)
-        prompt_eval_duration_seconds: float = prompt_eval_duration / 1000000000
-
-
-        json_string: str = ollama_response_json["response"]
-
-
-        response_data: dict[str, Any] = turn_json_string_to_dict(json_string=json_string)
-
-        print("GEMMA RESPONSE:")
-        print(json.dumps(response_data, indent=4))
-
-        ollama_response_validation(response_dict=response_data)
-        print(response_data)
-        print(f"Tokenizercount: {tokens_prompt}")
-        print(f"Prompt tokens used: {prompt_tokens}")
-        print(f"Completion tokens used: {completion_tokens}")
-        return response_data, prompt_tokens, completion_tokens, tokens_prompt, inference_duration, inference_duration_seconds, prompt_eval_duration, prompt_eval_duration_seconds, ai_model, model_num_ctx, max_prompt_tokens,
-    else:
-        raise exceptions.OllamaAPIError()
-
-def ollama_response_validation(response_dict: dict[str, Any]) -> None:
-    required_keys = {"category":str, "summary":str, "subcategory":str, "tags": list}
-    if not set(required_keys).issubset(response_dict.keys()):
-        raise exceptions.OllamaResponseFormatError()
-    for key, expected_type in required_keys.items():
-        if not isinstance(response_dict[key], expected_type):
-            raise exceptions.OllamaResponseFormatError()
-    for tags in response_dict["tags"]:
-        if not isinstance(tags, str):
-            raise exceptions.OllamaResponseFormatError()
-
-def build_processing_stats(character_count:int, word_count:int, tokenizer_token_count:int, prompt_tokens:int, completion_tokens:int, tokens_prompt: int, inference_duration: int, inference_duration_seconds: float, prompt_eval_duration: int, prompt_eval_duration_seconds: float) -> dict[str, int|float]:
-    processing_stats: dict[str, int|float] = {"character_count": character_count, "word_count": word_count, "tokenizer_token_count": tokenizer_token_count, "tokens_prompt": tokens_prompt, "prompt_eval_count": prompt_tokens, "eval_count": completion_tokens, "inference_duration": inference_duration, "inference_duration_seconds": inference_duration_seconds, "prompt_eval_duration": prompt_eval_duration, "prompt_eval_duration_seconds": prompt_eval_duration_seconds}
-    return processing_stats
     
 def error_helper(error: Exception) -> None:
     print(f"Error: {error}")

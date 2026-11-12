@@ -243,6 +243,11 @@ def main() -> None:
                     break
                 try:
                     final_record_sql = add_to_final_record(final_record, sorted_original_file_path, sorted_ollama_file_path, total_ollama_api_processing_duration, processing_duration, ai_model, model_num_ctx, max_prompt_tokens)
+                    write_final_record_to_json(final_record=final_record_sql, auto_file_name=sorted_ollama_file_path)
+                except (TypeError, OSError) as error:
+                    error_helper(error)
+                    break
+                try:    
                     extract_record = extract_finalrecord_values_for_sqlite(final_record_sql)
                     insert_dict = insert_dict_into_sql(extract_record, db_connection) #Saved Insert variable for debugging purposes, or later use, but not used in the final code.
                 except (exceptions.DatabaseInsertionError, exceptions.DatabaseTableAlterError,) as error:
